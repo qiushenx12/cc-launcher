@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+src-tauri/target/
+src-tauri/release-bundle/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code local
+.claude/
+
+# Logs
+*.log
+
+# Version control
+.svn/
+.git/
+

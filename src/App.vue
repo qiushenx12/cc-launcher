@@ -1,0 +1,850 @@
+<template>
+  <div class="app-layout">
+    <!-- Custom title bar -->
+    <header class="title-bar" data-tauri-drag-region @dblclick="toggleMaximize">
+      <div class="title-bar__left">
+        <button
+          class="title-bar__icon-btn"
+          :title="leftSidebarToggleTitle"
+          :aria-label="leftSidebarToggleTitle"
+          data-tauri-drag-region="false"
+          @click="toggleActiveLeftSidebar"
+          @dblclick.stop
+        >
+          <span class="sidebar-toggle-icon sidebar-toggle-icon--left" aria-hidden="true"></span>
+        </button>
+      </div>
+
+      <nav class="title-bar__tabs" @dblclick.stop>
+        <button
+          class="title-bar__tab"
+          :class="{ active: mainTab === 'config' }"
+          data-tauri-drag-region="false"
+          @click="mainTab = 'config'"
+        >
+          配置
+        </button>
+        <button
+          class="title-bar__tab"
+          :class="{ active: mainTab === 'project' }"
+          data-tauri-drag-region="false"
+          @click="mainTab = 'project'"
+        >
+          项目
+        </button>
+      </nav>
+
+      <div class="title-bar__controls" @dblclick.stop>
+        <button
+          class="title-bar__control"
+          data-tauri-drag-region="false"
+          title="最小化"
+          aria-label="最小化"
+          @click="minimizeWindow"
+        >
+          <span class="title-bar__window-icon title-bar__window-icon--minimize" aria-hidden="true"></span>
+        </button>
+        <button
+          class="title-bar__control"
+          data-tauri-drag-region="false"
+          title="最大化/还原"
+          aria-label="最大化/还原"
+          @click="toggleMaximize"
+        >
+          <span
+            class="title-bar__window-icon"
+            :class="isMaximized ? 'title-bar__window-icon--restore' : 'title-bar__window-icon--maximize'"
+            aria-hidden="true"
+          ></span>
+        </button>
+        <button
+          class="title-bar__control title-bar__control--close"
+          data-tauri-drag-region="false"
+          title="关闭"
+          aria-label="关闭"
+          @click="closeWindow"
+        >
+          <span class="title-bar__window-icon title-bar__window-icon--close" aria-hidden="true"></span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Content area -->
+    <main class="app-content">
+      <!-- Config panels -->
+      <div v-show="mainTab === 'config'" class="app-panel">
+        <ClaudePanel :sidebar-collapsed="configSidebarCollapsed" />
+      </div>
+
+      <!-- Terminal panel — always mounted to preserve state -->
+      <div v-show="mainTab === 'terminal'" class="app-panel">
+        <TerminalManager ref="terminalManagerRef" :launch-dir="activeLaunchDir" />
+      </div>
+
+      <!-- Project panel -->
+      <div v-show="mainTab === 'project'" class="app-panel">
+        <ProjectPanel @open-settings="showSettings = !showSettings" />
+      </div>
+
+      <!-- Orchestration panel -->
+      <div v-show="mainTab === 'orchestration'" class="app-panel">
+        <OrchestrationManager />
+      </div>
+    </main>
+
+    <!-- Status bar -->
+    <StatusBar :items="statusItems" />
+
+    <div v-show="showSettings" class="settings-popover">
+      <div class="settings-dropdown__section">主题</div>
+      <button
+        class="settings-dropdown__item"
+        :class="{ active: theme === 'light' }"
+        @click="setTheme('light')"
+      >
+        <span class="settings-dropdown__check" v-if="theme === 'light'">✓</span>
+        <span class="settings-dropdown__check" v-else></span>
+        浅色
+      </button>
+      <button
+        class="settings-dropdown__item"
+        :class="{ active: theme === 'dark' }"
+        @click="setTheme('dark')"
+      >
+        <span class="settings-dropdown__check" v-if="theme === 'dark'">✓</span>
+        <span class="settings-dropdown__check" v-else></span>
+        深色
+      </button>
+
+      <div class="settings-dropdown__section">项目终端拖入文件</div>
+      <button
+        class="settings-dropdown__item"
+        :class="{ active: claudeStore.projectDropPathMode === 'relative' }"
+        @click="setProjectDropPathMode('relative')"
+      >
+        <span class="settings-dropdown__check" v-if="claudeStore.projectDropPathMode === 'relative'">✓</span>
+        <span class="settings-dropdown__check" v-else></span>
+        相对路径
+      </button>
+      <button
+        class="settings-dropdown__item"
+        :class="{ active: claudeStore.projectDropPathMode === 'filename' }"
+        @click="setProjectDropPathMode('filename')"
+      >
+        <span class="settings-dropdown__check" v-if="claudeStore.projectDropPathMode === 'filename'">✓</span>
+        <span class="settings-dropdown__check" v-else></span>
+        仅文件名
+      </button>
+
+      <div class="settings-dropdown__section">终端字体大小</div>
+      <div class="settings-dropdown__item font-size-row">
+        <button
+          class="font-size-btn"
+          :disabled="terminalStore.fontSize <= 6"
+          @click="terminalStore.setFontSize(terminalStore.fontSize - 1)"
+        >−</button>
+        <span class="font-size-value">{{ terminalStore.fontSize }}</span>
+        <button
+          class="font-size-btn"
+          :disabled="terminalStore.fontSize >= 28"
+          @click="terminalStore.setFontSize(terminalStore.fontSize + 1)"
+        >+</button>
+      </div>
+
+      <div class="settings-dropdown__section">APP 字体大小</div>
+      <div class="settings-dropdown__item font-size-row">
+        <button
+          class="font-size-btn"
+          :disabled="appFontSize <= APP_FONT_MIN"
+          @click="setAppFontSize(-1)"
+        >−</button>
+        <span class="font-size-value">{{ appFontSize }}px</span>
+        <button
+          class="font-size-btn"
+          :disabled="appFontSize >= APP_FONT_MAX"
+          @click="setAppFontSize(1)"
+        >+</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
+import ClaudePanel from './components/claude/ClaudePanel.vue'
+import TerminalManager from './components/terminal/TerminalManager.vue'
+import ProjectPanel from './components/project/ProjectPanel.vue'
+import OrchestrationManager from './components/orchestration/OrchestrationManager.vue'
+import StatusBar from './components/common/StatusBar.vue'
+import { useClaudeStore } from './stores/claude'
+import { useTerminalStore } from './stores/terminal'
+import { useProjectStore } from './stores/project'
+
+type MainTab = 'config' | 'terminal' | 'project' | 'orchestration'
+
+const mainTab = ref<MainTab>('config')
+const terminalManagerRef = ref<InstanceType<typeof TerminalManager> | null>(null)
+const configSidebarCollapsed = ref(false)
+
+const leftSidebarToggleTitle = computed(() => {
+  if (mainTab.value === 'project') return '折叠/展开项目边栏'
+  if (mainTab.value === 'config') return '折叠/展开配置边栏'
+  return '折叠/展开左侧边栏'
+})
+
+function toggleActiveLeftSidebar() {
+  if (mainTab.value === 'project') {
+    projectStore.toggleLeftSidebarCollapsed()
+    return
+  }
+  if (mainTab.value === 'config') {
+    configSidebarCollapsed.value = !configSidebarCollapsed.value
+  }
+}
+
+// ── Window controls ────────────────────────────────────────────────────────
+const win = getCurrentWindow()
+const isMaximized = ref(false)
+
+async function minimizeWindow() {
+  await win.minimize().catch(() => {})
+}
+
+async function toggleMaximize() {
+  await win.toggleMaximize().catch(() => {})
+  isMaximized.value = await win.isMaximized().catch(() => false)
+}
+
+async function closeWindow() {
+  // Let the registered onCloseRequested handler perform the actual cleanup.
+  await win.close().catch(() => {})
+}
+
+// ── Theme ──────────────────────────────────────────────────────────────────
+const showSettings = ref(false)
+const theme = ref<'light' | 'dark'>('light')
+
+function applyTheme(t: 'light' | 'dark') {
+  theme.value = t
+  document.documentElement.setAttribute('data-theme', t)
+  localStorage.setItem('app-theme', t)
+  invoke('set_titlebar_theme', { dark: t === 'dark' }).catch(() => {
+    // ignore on non-Windows platforms or dev browser
+  })
+}
+
+function setTheme(t: 'light' | 'dark') {
+  applyTheme(t)
+  showSettings.value = false
+}
+
+function setProjectDropPathMode(mode: 'filename' | 'relative') {
+  claudeStore.projectDropPathMode = mode
+  showSettings.value = false
+}
+
+// ── App font size ──────────────────────────────────────────────────────────
+const APP_FONT_MIN = 10
+const APP_FONT_MAX = 18
+const appFontSize = ref(13)
+
+function applyAppFontSize(size: number) {
+  const clamped = Math.max(APP_FONT_MIN, Math.min(APP_FONT_MAX, size))
+  appFontSize.value = clamped
+  document.documentElement.style.setProperty('--font-size-base', `${clamped}px`)
+  document.documentElement.style.setProperty('--font-size-title', `${clamped + 1}px`)
+  document.documentElement.style.setProperty('--font-size-small', `${clamped - 1}px`)
+  localStorage.setItem('app-font-size', String(clamped))
+}
+
+function setAppFontSize(delta: number) {
+  applyAppFontSize(appFontSize.value + delta)
+}
+
+function loadAppFontSize() {
+  const saved = parseInt(localStorage.getItem('app-font-size') ?? '', 10)
+  if (!isNaN(saved)) {
+    applyAppFontSize(saved)
+  }
+}
+
+function loadTheme() {
+  const saved = localStorage.getItem('app-theme') as 'light' | 'dark' | null
+  if (saved === 'dark' || saved === 'light') {
+    applyTheme(saved)
+  }
+}
+
+function onDocumentClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (!target.closest('.settings-popover') && !target.closest('.settings-entry')) {
+    showSettings.value = false
+  }
+}
+
+const claudeStore = useClaudeStore()
+const terminalStore = useTerminalStore()
+const projectStore = useProjectStore()
+
+const activeLaunchDir = computed(() => claudeStore.launchDir)
+let unlistenClaudeHistory: (() => void) | undefined
+let refreshingClaudeHistory = false
+
+async function refreshClaudeHistory() {
+  if (refreshingClaudeHistory) return
+  refreshingClaudeHistory = true
+  try {
+    await Promise.all([
+      claudeStore.loadRecentProjects(),
+      claudeStore.loadSessions({ resetDisplayCount: false }),
+    ])
+    await projectStore.refreshClaudeHistory()
+  } catch (error) {
+    console.error('Failed to refresh Claude history:', error)
+  } finally {
+    refreshingClaudeHistory = false
+  }
+}
+
+// Switch to terminal view when the Claude store requests it
+watch(() => claudeStore.switchToTerminal, (val) => {
+  if (val) {
+    mainTab.value = 'terminal'
+    claudeStore.switchToTerminal = false
+  }
+})
+
+// Built-in Claude launches from the config panel now live inside Project.
+watch(() => claudeStore.switchToProject, (val) => {
+  if (val) {
+    mainTab.value = 'project'
+    claudeStore.switchToProject = false
+  }
+})
+
+// Ensure terminal panes re-fit when switching from config back to terminal tab.
+// The ResizeObserver skips fits when the container is hidden (0×0), so we need
+// an explicit signal when the panel becomes visible again.
+watch(mainTab, (tab) => {
+  showSettings.value = false
+  if (tab === 'terminal') {
+    terminalStore.triggerRefit()
+  }
+  if (tab === 'project') {
+    terminalStore.triggerRefit()
+  }
+  invoke('save_last_active_main_tab', { tab }).catch(() => {})
+})
+
+// ── Status bar ─────────────────────────────────────────────────────────────
+const claudeConfigDir = ref<string>('')
+
+const statusItems = computed(() => {
+  if (mainTab.value === 'terminal') {
+    return [
+      { label: '模式', value: '终端' },
+      { label: '标签页', value: String(terminalStore.terminalTabs.length) },
+    ]
+  }
+  if (mainTab.value === 'project') {
+    return [
+      { label: '模式', value: '项目' },
+      { label: '项目', value: projectStore.activeProject?.name ?? '未选择' },
+      { label: '会话', value: projectStore.activeSession?.name ?? '未选择' },
+    ]
+  }
+  if (mainTab.value === 'orchestration') {
+    return [
+      { label: '模式', value: '编排' },
+      { label: '标签页', value: String(terminalStore.tabs.length) },
+    ]
+  }
+  return [
+    { label: '工具', value: 'Claude Code' },
+    ...(claudeStore.claudeExePath
+      ? [{ label: '路径', value: claudeStore.claudeExePath }]
+      : [{ label: '状态', value: '未安装' }]),
+    ...(claudeConfigDir.value
+      ? [{ label: '配置目录', value: claudeConfigDir.value }]
+      : []),
+  ]
+})
+
+// ── Window size persistence ────────────────────────────────────────────────
+interface WindowState {
+  width?: number
+  height?: number
+  x?: number
+  y?: number
+}
+
+async function loadWindowState() {
+  try {
+    const state = await invoke<WindowState>('load_window_state')
+    const win = getCurrentWindow()
+    if (state && state.width && state.height) {
+      const { LogicalSize } = await import('@tauri-apps/api/dpi')
+      await win.setSize(new LogicalSize(state.width, state.height))
+    }
+    if (state && state.x !== undefined && state.y !== undefined) {
+      const { LogicalPosition } = await import('@tauri-apps/api/dpi')
+      await win.setPosition(new LogicalPosition(state.x, state.y))
+    }
+  } catch {
+    // use defaults from tauri.conf.json
+  }
+}
+
+async function saveWindowState() {
+  try {
+    const win = getCurrentWindow()
+    const size = await win.innerSize()       // physical pixels
+    const pos = await win.outerPosition()    // physical pixels
+    const scale = await win.scaleFactor()    // e.g. 1.25 on 125% DPI
+    await invoke('save_window_state', {
+      state: {
+        width: size.width / scale,           // store as logical pixels
+        height: size.height / scale,
+        x: pos.x / scale,
+        y: pos.y / scale,
+      },
+    })
+  } catch {
+    // ignore
+  }
+}
+
+async function loadLastMainTab() {
+  try {
+    const tab = await invoke<MainTab>('load_last_active_main_tab')
+    if (tab === 'project' || tab === 'config') {
+      mainTab.value = tab
+    } else if (tab === 'terminal' || tab === 'orchestration') {
+      mainTab.value = 'config'
+    }
+  } catch {
+    // keep default
+  }
+}
+
+function cycleProjectSession() {
+  const sessions = projectStore.sessionsOfActiveProject
+  if (sessions.length <= 1) return
+  const currentIdx = sessions.findIndex((session) => session.id === projectStore.activeSessionId)
+  const nextIdx = (currentIdx + 1) % sessions.length
+  projectStore.activateSession(sessions[nextIdx].id)
+}
+
+// ── Global keyboard shortcuts ──────────────────────────────────────────────
+function onKeyDown(e: KeyboardEvent) {
+  if (!e.ctrlKey) return
+
+  if (mainTab.value === 'project') {
+    if (e.key === 't' || e.key === 'T') {
+      e.preventDefault()
+      projectStore.createSession()
+      return
+    }
+
+    if (e.key === 'w' || e.key === 'W') {
+      e.preventDefault()
+      projectStore.closeSessionTerminal()
+      return
+    }
+
+    if (e.key === 'Tab') {
+      e.preventDefault()
+      cycleProjectSession()
+      return
+    }
+
+    if (e.key === 'p' || e.key === 'P') {
+      e.preventDefault()
+      projectStore.openFile()
+      return
+    }
+
+    if (e.key === 's' || e.key === 'S') {
+      e.preventDefault()
+      projectStore.saveFile()
+      return
+    }
+
+    if (e.shiftKey && (e.key === 'b' || e.key === 'B')) {
+      e.preventDefault()
+      projectStore.sidebarOpen ? projectStore.closeSidebar() : projectStore.openSidebar('tools')
+      return
+    }
+  }
+
+  if (e.key === 'w' || e.key === 'W') {
+    e.preventDefault()
+    if (mainTab.value === 'terminal' && terminalStore.activeTabId !== null) {
+      terminalStore.closeTab(terminalStore.activeTabId)
+    }
+    return
+  }
+
+  if (e.key === 'Tab') {
+    e.preventDefault()
+    if (mainTab.value === 'terminal' && terminalStore.terminalTabs.length > 1) {
+      const ids = terminalStore.terminalTabs.map(t => t.id)
+      const currentIdx = ids.indexOf(terminalStore.activeTabId ?? -1)
+      const nextIdx = (currentIdx + 1) % ids.length
+      terminalStore.activateTab(ids[nextIdx])
+    }
+    return
+  }
+}
+
+// ── Lifecycle ──────────────────────────────────────────────────────────────
+onMounted(async () => {
+  loadTheme()
+  loadAppFontSize()
+  await loadWindowState()
+  await loadLastMainTab()
+  isMaximized.value = await win.isMaximized().catch(() => false)
+
+  // Load config dirs for status bar
+  try {
+    claudeConfigDir.value = await invoke<string>('get_claude_config_dir')
+  } catch { /* ignore */ }
+
+  window.addEventListener('keydown', onKeyDown)
+  document.addEventListener('click', onDocumentClick)
+  unlistenClaudeHistory = await listen('claude_history_changed', () => {
+    refreshClaudeHistory().catch((error) => {
+      console.error('Failed to refresh Claude history:', error)
+    })
+  }).catch(() => undefined)
+
+  // NOTE: Removed `onResized` handler — it fired on every resize event
+  // (including drag), accumulating IPC calls that blocked the event loop.
+  // The maximize icon still updates correctly via toggleMaximize().
+  let unlisten = () => {}
+
+  // Save window state on close, then explicitly close the window.
+  // In Tauri v2, registering onCloseRequested prevents the default close —
+  // we must call win.close() ourselves after finishing async work.
+  win.onCloseRequested(async (event) => {
+    event.preventDefault()
+    try {
+      await invoke('save_last_active_main_tab', { tab: mainTab.value })
+      await saveWindowState()
+    } catch (e) {
+      console.error('Failed to save window state on close:', e)
+    }
+    unlisten()
+    await win.destroy()
+  })
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeyDown)
+  document.removeEventListener('click', onDocumentClick)
+  unlistenClaudeHistory?.()
+  saveWindowState()
+})
+</script>
+
+<style scoped>
+.app-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: var(--bg);
+  position: relative;
+}
+
+.app-nav {
+  display: none;
+}
+
+.title-bar {
+  flex-shrink: 0;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 0 8px;
+  background-color: var(--card);
+  border-bottom: 1px solid var(--separator);
+  user-select: none;
+}
+
+.title-bar__left {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+
+.title-bar__left:empty {
+  display: none;
+}
+
+.title-bar__tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+}
+
+.title-bar__tab {
+  height: 28px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-base);
+  font-size: var(--font-size-base);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.title-bar__tab:hover {
+  background-color: var(--tab-bg);
+  color: var(--text-primary);
+}
+
+.title-bar__tab.active {
+  background-color: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+.title-bar__icon-btn {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.title-bar__icon-btn:hover {
+  background-color: var(--tab-bg);
+  color: var(--text-primary);
+}
+
+.title-bar__controls {
+  flex: 0 0 auto;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.title-bar__control {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.title-bar__window-icon {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  display: block;
+  color: currentColor;
+}
+
+.title-bar__window-icon--minimize::before {
+  content: '';
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 7px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.title-bar__window-icon--maximize::before {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border: 1.5px solid currentColor;
+  border-radius: 1px;
+}
+
+.title-bar__window-icon--restore::before,
+.title-bar__window-icon--restore::after {
+  content: '';
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid currentColor;
+  border-radius: 1px;
+}
+
+.title-bar__window-icon--restore::before {
+  right: 1px;
+  top: 1px;
+}
+
+.title-bar__window-icon--restore::after {
+  left: 1px;
+  bottom: 1px;
+}
+
+.title-bar__window-icon--close::before,
+.title-bar__window-icon--close::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 6px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.title-bar__window-icon--close::before {
+  transform: rotate(45deg);
+}
+
+.title-bar__window-icon--close::after {
+  transform: rotate(-45deg);
+}
+
+.title-bar__control:hover {
+  background-color: var(--tab-bg);
+  color: var(--text-primary);
+}
+
+.title-bar__control--close:hover {
+  background-color: var(--danger);
+  color: #fff;
+}
+
+.settings-popover {
+  position: absolute;
+  left: 8px;
+  bottom: 34px;
+  min-width: 140px;
+  background-color: var(--card);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15), 0 0 0 1px var(--separator);
+  padding: 6px;
+  z-index: 1000;
+  animation: dropdown-in 0.12s ease;
+}
+
+[data-theme="dark"] .settings-popover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--separator);
+}
+
+@keyframes dropdown-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.settings-dropdown__section {
+  padding: 4px 8px;
+  font-size: var(--font-size-small);
+  font-weight: 600;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.settings-dropdown__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  font-family: var(--font-base);
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  background-color: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+  text-align: left;
+}
+
+.settings-dropdown__item:hover {
+  background-color: var(--tab-bg);
+}
+
+.settings-dropdown__item.active {
+  color: var(--primary);
+}
+
+.settings-dropdown__check {
+  display: inline-block;
+  width: 16px;
+  text-align: center;
+  font-weight: 600;
+}
+
+.font-size-row {
+  justify-content: space-between;
+}
+
+.font-size-btn {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text-primary);
+  font-size: var(--font-size-base);
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.font-size-btn:hover:not(:disabled) {
+  background-color: var(--tab-bg);
+}
+
+.font-size-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.font-size-value {
+  min-width: 24px;
+  text-align: center;
+  font-weight: 600;
+}
+
+.app-content {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+
+.app-panel {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+}
+</style>
