@@ -1,5 +1,6 @@
 pub mod claude_launcher;
 pub mod config_store;
+pub mod dependency_manager;
 pub mod model_fetcher;
 pub mod persistent_state;
 pub mod project_manager;
@@ -85,6 +86,12 @@ pub fn run() {
             // claude_launcher commands
             claude_launcher::launch_claude,
             claude_launcher::find_claude_executable,
+            claude_launcher::check_claude_code_installed,
+            claude_launcher::install_claude_code_via_npm,
+            // dependency_manager commands
+            dependency_manager::check_node_dependency,
+            dependency_manager::check_git_dependency,
+            dependency_manager::install_dependency_via_winget,
             // utils commands
             utils::get_claude_config_dir,
             utils::open_directory,

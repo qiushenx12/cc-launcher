@@ -4,6 +4,13 @@ import { invoke } from '@tauri-apps/api/core'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import type { ClaudeSettings, SessionEntry } from '@/types/config'
 
+export interface ClaudeCodeCheckResult {
+  installed: boolean
+  path: string | null
+  version: string | null
+  message: string
+}
+
 const KNOWN_ENV_KEYS = new Set([
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
@@ -319,14 +326,27 @@ export const useClaudeStore = defineStore('claude', () => {
     }
   }
 
-  async function findClaudeExe() {
+  async function checkClaudeCode(): Promise<ClaudeCodeCheckResult> {
     try {
-      const path = await invoke<string | null>('find_claude_executable')
-      claudeExePath.value = path
-      claudeInstalled.value = !!path
-    } catch {
+      const result = await invoke<ClaudeCodeCheckResult>('check_claude_code_installed')
+      claudeExePath.value = result.installed ? result.path : null
+      claudeInstalled.value = result.installed
+      return result
+    } catch (error) {
+      claudeExePath.value = null
       claudeInstalled.value = false
+      return {
+        installed: false,
+        path: null,
+        version: null,
+        message: `无法检查 Claude Code：${String(error)}`,
+      }
     }
+  }
+
+  async function findClaudeExe() {
+    const result = await checkClaudeCode()
+    return result.installed ? result.path : null
   }
 
   async function launchClaude(sessionId?: string) {
@@ -435,6 +455,7 @@ export const useClaudeStore = defineStore('claude', () => {
     loadRecentProjects,
     loadSettings,
     saveSettings,
+    checkClaudeCode,
     findClaudeExe,
     launchClaude,
     loadLaunchDir,

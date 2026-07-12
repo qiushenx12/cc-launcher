@@ -7,6 +7,7 @@
           class="title-bar__icon-btn"
           :title="leftSidebarToggleTitle"
           :aria-label="leftSidebarToggleTitle"
+          :disabled="!appReady"
           data-tauri-drag-region="false"
           @click="toggleActiveLeftSidebar"
           @dblclick.stop
@@ -19,16 +20,18 @@
         <button
           class="title-bar__tab"
           :class="{ active: mainTab === 'config' }"
+          :disabled="!appReady"
           data-tauri-drag-region="false"
-          @click="mainTab = 'config'"
+          @click="openConfigTab"
         >
           配置
         </button>
         <button
           class="title-bar__tab"
           :class="{ active: mainTab === 'project' }"
+          :disabled="!appReady"
           data-tauri-drag-region="false"
-          @click="mainTab = 'project'"
+          @click="openProjectTab"
         >
           项目
         </button>
@@ -70,7 +73,7 @@
     </header>
 
     <!-- Content area -->
-    <main class="app-content">
+    <main v-if="appReady" class="app-content">
       <!-- Config panels -->
       <div v-show="mainTab === 'config'" class="app-panel">
         <ClaudePanel :sidebar-collapsed="configSidebarCollapsed" />
@@ -82,7 +85,7 @@
       </div>
 
       <!-- Project panel -->
-      <div v-show="mainTab === 'project'" class="app-panel">
+      <div v-if="projectPanelActivated" v-show="mainTab === 'project'" class="app-panel">
         <ProjectPanel @open-settings="showSettings = !showSettings" />
       </div>
 
@@ -93,9 +96,113 @@
     </main>
 
     <!-- Status bar -->
-    <StatusBar :items="statusItems" />
+    <StatusBar v-if="appReady" :items="statusItems" />
 
-    <div v-show="showSettings" class="settings-popover">
+    <div
+      v-if="dependencyState !== 'ready'"
+      class="dependency-gate"
+      role="alert"
+      aria-live="polite"
+    >
+      <section class="dependency-gate__card">
+        <div class="dependency-gate__icon" aria-hidden="true">
+          {{ dependencyGateIcon }}
+        </div>
+        <h1>{{ dependencyGateTitle }}</h1>
+        <p class="dependency-gate__description">{{ dependencyGateMessage }}</p>
+        <p v-if="dependencyResult?.version" class="dependency-gate__detail">
+          当前版本：{{ dependencyResult.version }}
+        </p>
+        <p v-if="dependencyActionMessage" class="dependency-gate__feedback">
+          {{ dependencyActionMessage }}
+        </p>
+
+        <div v-if="dependencyState === 'checking' || dependencyState === 'installing'" class="dependency-gate__progress">
+          <span class="dependency-gate__spinner" aria-hidden="true"></span>
+          {{ dependencyState === 'installing' ? '请等待安装命令完成。' : '正在检查系统环境。' }}
+        </div>
+
+        <div v-else-if="dependencyState === 'restart_required'" class="dependency-gate__actions">
+          <button class="dependency-gate__button dependency-gate__button--primary" @click="closeWindow">
+            关闭应用
+          </button>
+        </div>
+
+        <div v-else class="dependency-gate__actions">
+          <button class="dependency-gate__button dependency-gate__button--secondary" @click="openDependencyWebsite">
+            前往官网下载
+          </button>
+          <button
+            v-if="canInstallDependency"
+            class="dependency-gate__button dependency-gate__button--primary"
+            @click="installActiveDependency"
+          >
+            通过 winget 安装
+          </button>
+          <button
+            v-if="dependencyState === 'error'"
+            class="dependency-gate__button dependency-gate__button--secondary"
+            @click="retryDependencyCheck"
+          >
+            重新检测
+          </button>
+          <button class="dependency-gate__button dependency-gate__button--link" @click="requestRestartAfterManualInstall">
+            我已完成手动安装
+          </button>
+        </div>
+        <p v-if="dependencyState !== 'checking' && dependencyState !== 'installing'" class="dependency-gate__hint">
+          安装完成后请关闭并重新打开应用；当前进程不会自动更新系统 PATH。
+        </p>
+      </section>
+    </div>
+
+    <div
+      v-if="projectClaudeGateVisible"
+      class="dependency-gate project-claude-gate"
+      role="alert"
+      aria-live="polite"
+    >
+      <section class="dependency-gate__card">
+        <div class="dependency-gate__icon" aria-hidden="true">
+          {{ projectClaudeChecking ? '⏳' : '✦' }}
+        </div>
+        <h1>{{ projectClaudeChecking ? '正在检查 Claude Code' : '未检测到 Claude Code' }}</h1>
+        <p class="dependency-gate__description">
+          {{ projectClaudeChecking ? '项目功能正在确认 Claude Code 是否可用。' : projectClaudeMessage }}
+        </p>
+        <p v-if="projectClaudeVersion" class="dependency-gate__detail">当前版本：{{ projectClaudeVersion }}</p>
+
+        <div v-if="projectClaudeChecking" class="dependency-gate__progress">
+          <span class="dependency-gate__spinner" aria-hidden="true"></span>
+          正在检查 Claude Code。
+        </div>
+
+        <div v-else class="dependency-gate__actions">
+          <button class="dependency-gate__button dependency-gate__button--primary" @click="openClaudeCodeInstallGuide">
+            打开安装说明
+          </button>
+          <button
+            class="dependency-gate__button dependency-gate__button--secondary"
+          :disabled="projectClaudeInstalling"
+          @click="projectClaudeInstallCompleted ? retryProjectClaudeCheck() : installClaudeCode()"
+          >
+            <span v-if="projectClaudeInstalling">
+              正在安装<span class="installing-dots" aria-label="安装中"><span>.</span><span>.</span><span>.</span></span>
+            </span>
+            <span v-else-if="projectClaudeInstallCompleted">重新检测</span>
+            <span v-else>一键安装</span>
+          </button>
+          <button class="dependency-gate__button dependency-gate__button--link" @click="openConfigTab">
+            返回配置
+          </button>
+        </div>
+        <p v-if="!projectClaudeChecking" class="dependency-gate__hint">
+          安装完成后点击“重新检测”再进入项目页。
+        </p>
+      </section>
+    </div>
+
+    <div v-if="appReady && showSettings" class="settings-popover">
       <div class="settings-dropdown__section">主题</div>
       <button
         class="settings-dropdown__item"
@@ -174,6 +281,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { open } from '@tauri-apps/plugin-shell'
 import ClaudePanel from './components/claude/ClaudePanel.vue'
 import TerminalManager from './components/terminal/TerminalManager.vue'
 import ProjectPanel from './components/project/ProjectPanel.vue'
@@ -184,10 +292,73 @@ import { useTerminalStore } from './stores/terminal'
 import { useProjectStore } from './stores/project'
 
 type MainTab = 'config' | 'terminal' | 'project' | 'orchestration'
+type DependencyName = 'node' | 'git'
+type DependencyStatus = 'installed' | 'missing' | 'unsupported' | 'error'
+type DependencyGateState = 'checking' | 'missing' | 'unsupported' | 'error' | 'installing' | 'restart_required' | 'ready'
+
+interface DependencyCheckResult {
+  dependency: DependencyName
+  status: DependencyStatus
+  path: string | null
+  version: string | null
+  message: string
+}
+
+interface DependencyInstallResult {
+  dependency: DependencyName
+  displayName: string
+  message: string
+}
+
+type ProjectClaudeGateState = 'idle' | 'checking' | 'missing' | 'ready'
 
 const mainTab = ref<MainTab>('config')
 const terminalManagerRef = ref<InstanceType<typeof TerminalManager> | null>(null)
 const configSidebarCollapsed = ref(false)
+const dependencyState = ref<DependencyGateState>('checking')
+const dependencyResult = ref<DependencyCheckResult | null>(null)
+const dependencyActionMessage = ref('')
+const projectClaudeGateState = ref<ProjectClaudeGateState>('idle')
+const projectClaudeMessage = ref('未检测到 Claude Code。请先完成安装后再进入项目页。')
+const projectClaudeVersion = ref<string | null>(null)
+const projectPanelActivated = ref(false)
+const projectClaudeInstalling = ref(false)
+const projectClaudeInstallCompleted = ref(false)
+let readyAppInitialized = false
+
+const appReady = computed(() => dependencyState.value === 'ready')
+const projectClaudeGateVisible = computed(() => {
+  return appReady.value && mainTab.value === 'project' && projectClaudeGateState.value !== 'ready'
+})
+const projectClaudeChecking = computed(() => {
+  return projectClaudeGateState.value === 'idle' || projectClaudeGateState.value === 'checking'
+})
+const activeDependencyName = computed(() => dependencyResult.value?.dependency === 'git' ? 'Git' : 'Node.js')
+const canInstallDependency = computed(() => {
+  return dependencyState.value === 'missing' || dependencyState.value === 'unsupported'
+})
+const dependencyGateTitle = computed(() => {
+  if (dependencyState.value === 'checking') return '正在检查运行环境'
+  if (dependencyState.value === 'installing') return `正在安装 ${activeDependencyName.value}`
+  if (dependencyState.value === 'restart_required') return '安装完成，请重启应用'
+  if (dependencyState.value === 'unsupported') return `${activeDependencyName.value} 版本不兼容`
+  if (dependencyState.value === 'error') return `${activeDependencyName.value} 检测失败`
+  return `未检测到 ${activeDependencyName.value}`
+})
+const dependencyGateIcon = computed(() => {
+  if (dependencyState.value === 'checking' || dependencyState.value === 'installing') return '⏳'
+  if (dependencyState.value === 'restart_required') return '↻'
+  if (dependencyState.value === 'error') return '⚠'
+  return dependencyResult.value?.dependency === 'git' ? '◆' : '⬢'
+})
+const dependencyGateMessage = computed(() => {
+  if (dependencyState.value === 'checking') return 'Claude Code 启动器正在依次检查 Node.js 和 Git。'
+  if (dependencyState.value === 'installing') return `正在通过 winget 安装 ${activeDependencyName.value}。`
+  if (dependencyState.value === 'restart_required') {
+    return dependencyActionMessage.value || '系统环境已变更。请关闭并重新打开应用后继续。'
+  }
+  return dependencyResult.value?.message || '无法确定依赖状态，请重试或手动安装。'
+})
 
 const leftSidebarToggleTitle = computed(() => {
   if (mainTab.value === 'project') return '折叠/展开项目边栏'
@@ -196,6 +367,7 @@ const leftSidebarToggleTitle = computed(() => {
 })
 
 function toggleActiveLeftSidebar() {
+  if (!appReady.value) return
   if (mainTab.value === 'project') {
     projectStore.toggleLeftSidebarCollapsed()
     return
@@ -203,6 +375,10 @@ function toggleActiveLeftSidebar() {
   if (mainTab.value === 'config') {
     configSidebarCollapsed.value = !configSidebarCollapsed.value
   }
+}
+
+function openConfigTab() {
+  mainTab.value = 'config'
 }
 
 // ── Window controls ────────────────────────────────────────────────────────
@@ -221,6 +397,108 @@ async function toggleMaximize() {
 async function closeWindow() {
   // Let the registered onCloseRequested handler perform the actual cleanup.
   await win.close().catch(() => {})
+}
+
+function setBlockedDependency(result: DependencyCheckResult) {
+  dependencyResult.value = result
+  dependencyActionMessage.value = ''
+  dependencyState.value = result.status === 'unsupported'
+    ? 'unsupported'
+    : result.status === 'error'
+      ? 'error'
+      : 'missing'
+}
+
+async function runDependencyCheck() {
+  dependencyState.value = 'checking'
+  dependencyResult.value = null
+  dependencyActionMessage.value = ''
+
+  let nodeResult: DependencyCheckResult
+  try {
+    nodeResult = await invoke<DependencyCheckResult>('check_node_dependency')
+  } catch (error) {
+    setBlockedDependency({
+      dependency: 'node',
+      status: 'error',
+      path: null,
+      version: null,
+      message: `无法检查 Node.js：${String(error)}`,
+    })
+    return
+  }
+
+  if (nodeResult.status !== 'installed') {
+    setBlockedDependency(nodeResult)
+    return
+  }
+
+  let gitResult: DependencyCheckResult
+  try {
+    gitResult = await invoke<DependencyCheckResult>('check_git_dependency')
+  } catch (error) {
+    setBlockedDependency({
+      dependency: 'git',
+      status: 'error',
+      path: null,
+      version: null,
+      message: `无法检查 Git：${String(error)}`,
+    })
+    return
+  }
+
+  if (gitResult.status !== 'installed') {
+    setBlockedDependency(gitResult)
+    return
+  }
+
+  dependencyState.value = 'ready'
+  await initializeReadyApp()
+}
+
+async function retryDependencyCheck() {
+  await runDependencyCheck()
+}
+
+async function openDependencyWebsite() {
+  const url = dependencyResult.value?.dependency === 'git'
+    ? 'https://git-scm.com/downloads'
+    : 'https://nodejs.org/en/download'
+  try {
+    await open(url)
+    dependencyActionMessage.value = '已在默认浏览器中打开下载页面。'
+  } catch (error) {
+    dependencyActionMessage.value = `无法打开下载页面：${String(error)}`
+  }
+}
+
+async function installActiveDependency() {
+  const dependency = dependencyResult.value?.dependency
+  if (!dependency || !canInstallDependency.value) return
+
+  const displayName = dependency === 'git' ? 'Git' : 'Node.js LTS'
+  const packageId = dependency === 'git' ? 'Git.Git' : 'OpenJS.NodeJS.LTS'
+  const confirmed = window.confirm(
+    `将通过 winget 安装 ${displayName}（${packageId}）。\n\n继续即表示同意 winget 源和该软件包的许可协议；安装程序可能请求管理员授权。`
+  )
+  if (!confirmed) return
+
+  const previousState = dependencyState.value
+  dependencyState.value = 'installing'
+  dependencyActionMessage.value = ''
+  try {
+    const result = await invoke<DependencyInstallResult>('install_dependency_via_winget', { dependency })
+    dependencyActionMessage.value = result.message
+    dependencyState.value = 'restart_required'
+  } catch (error) {
+    dependencyActionMessage.value = `安装失败：${String(error)}`
+    dependencyState.value = previousState
+  }
+}
+
+function requestRestartAfterManualInstall() {
+  dependencyActionMessage.value = '请关闭应用，完成安装后重新打开。应用重启后会重新检查环境。'
+  dependencyState.value = 'restart_required'
 }
 
 // ── Theme ──────────────────────────────────────────────────────────────────
@@ -289,11 +567,68 @@ const claudeStore = useClaudeStore()
 const terminalStore = useTerminalStore()
 const projectStore = useProjectStore()
 
+async function openProjectTab() {
+  if (!appReady.value || projectClaudeGateState.value === 'checking') return
+  if (projectClaudeGateState.value === 'ready') {
+    mainTab.value = 'project'
+    return
+  }
+
+  projectClaudeGateState.value = 'checking'
+  projectClaudeMessage.value = ''
+  projectClaudeVersion.value = null
+  projectClaudeInstallCompleted.value = false
+  mainTab.value = 'project'
+
+  const result = await claudeStore.checkClaudeCode()
+  projectClaudeVersion.value = result.version
+  if (result.installed) {
+    projectPanelActivated.value = true
+    projectClaudeGateState.value = 'ready'
+    return
+  }
+
+  projectClaudeMessage.value = result.message
+  projectClaudeGateState.value = 'missing'
+}
+
+async function retryProjectClaudeCheck() {
+  if (projectClaudeInstalling.value) return
+  projectClaudeGateState.value = 'idle'
+  await openProjectTab()
+}
+
+async function installClaudeCode() {
+  if (projectClaudeInstalling.value || projectClaudeInstallCompleted.value) return
+
+  projectClaudeInstalling.value = true
+  projectClaudeMessage.value = '正在通过 npm 安装 Claude Code，请稍候。'
+  try {
+    const result = await invoke<{ message: string }>('install_claude_code_via_npm')
+    projectClaudeMessage.value = result.message
+    projectClaudeInstallCompleted.value = true
+  } catch (error) {
+    projectClaudeMessage.value = `安装失败：${String(error)}`
+  } finally {
+    projectClaudeInstalling.value = false
+  }
+}
+
+async function openClaudeCodeInstallGuide() {
+  try {
+    await open('https://docs.anthropic.com/en/docs/claude-code/getting-started')
+    projectClaudeMessage.value = '已在默认浏览器中打开 Claude Code 安装说明。'
+  } catch (error) {
+    projectClaudeMessage.value = `无法打开安装说明：${String(error)}`
+  }
+}
+
 const activeLaunchDir = computed(() => claudeStore.launchDir)
 let unlistenClaudeHistory: (() => void) | undefined
 let refreshingClaudeHistory = false
 
 async function refreshClaudeHistory() {
+  if (!appReady.value) return
   if (refreshingClaudeHistory) return
   refreshingClaudeHistory = true
   try {
@@ -311,17 +646,23 @@ async function refreshClaudeHistory() {
 
 // Switch to terminal view when the Claude store requests it
 watch(() => claudeStore.switchToTerminal, (val) => {
-  if (val) {
+  if (val && appReady.value) {
     mainTab.value = 'terminal'
     claudeStore.switchToTerminal = false
   }
 })
 
 // Built-in Claude launches from the config panel now live inside Project.
-watch(() => claudeStore.switchToProject, (val) => {
-  if (val) {
-    mainTab.value = 'project'
+watch(() => claudeStore.switchToProject, async (val) => {
+  if (val && appReady.value) {
     claudeStore.switchToProject = false
+    if (claudeStore.claudeExePath) {
+      projectPanelActivated.value = true
+      projectClaudeGateState.value = 'ready'
+      mainTab.value = 'project'
+      return
+    }
+    await openProjectTab()
   }
 })
 
@@ -440,6 +781,7 @@ function cycleProjectSession() {
 
 // ── Global keyboard shortcuts ──────────────────────────────────────────────
 function onKeyDown(e: KeyboardEvent) {
+  if (!appReady.value) return
   if (!e.ctrlKey) return
 
   if (mainTab.value === 'project') {
@@ -501,6 +843,21 @@ function onKeyDown(e: KeyboardEvent) {
 }
 
 // ── Lifecycle ──────────────────────────────────────────────────────────────
+async function initializeReadyApp() {
+  if (readyAppInitialized) return
+  readyAppInitialized = true
+
+  try {
+    claudeConfigDir.value = await invoke<string>('get_claude_config_dir')
+  } catch {
+    // status bar can omit the directory when the app-data location is unavailable
+  }
+
+  if (mainTab.value === 'project') {
+    await openProjectTab()
+  }
+}
+
 onMounted(async () => {
   loadTheme()
   loadAppFontSize()
@@ -508,14 +865,10 @@ onMounted(async () => {
   await loadLastMainTab()
   isMaximized.value = await win.isMaximized().catch(() => false)
 
-  // Load config dirs for status bar
-  try {
-    claudeConfigDir.value = await invoke<string>('get_claude_config_dir')
-  } catch { /* ignore */ }
-
   window.addEventListener('keydown', onKeyDown)
   document.addEventListener('click', onDocumentClick)
   unlistenClaudeHistory = await listen('claude_history_changed', () => {
+    if (!appReady.value) return
     refreshClaudeHistory().catch((error) => {
       console.error('Failed to refresh Claude history:', error)
     })
@@ -540,6 +893,8 @@ onMounted(async () => {
     unlisten()
     await win.destroy()
   })
+
+  await runDependencyCheck()
 })
 
 onBeforeUnmount(() => {
@@ -634,6 +989,12 @@ onBeforeUnmount(() => {
 .title-bar__icon-btn:hover {
   background-color: var(--tab-bg);
   color: var(--text-primary);
+}
+
+.title-bar__icon-btn:disabled,
+.title-bar__tab:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .title-bar__controls {
@@ -846,5 +1207,165 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0;
   overflow: auto;
+}
+
+.dependency-gate {
+  position: absolute;
+  top: 38px;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 2000;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background:
+    radial-gradient(circle at top, color-mix(in srgb, var(--primary) 12%, transparent), transparent 44%),
+    var(--bg);
+}
+
+.dependency-gate__card {
+  width: min(100%, 560px);
+  padding: 36px;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius);
+  background-color: var(--card);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.18);
+  text-align: center;
+}
+
+.dependency-gate__icon {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  margin: 0 auto 16px;
+  place-items: center;
+  border-radius: 50%;
+  background-color: var(--tab-bg);
+  color: var(--primary);
+  font-size: 28px;
+}
+
+.dependency-gate h1 {
+  margin: 0 0 12px;
+  color: var(--text-primary);
+  font-size: 22px;
+}
+
+.dependency-gate__description,
+.dependency-gate__detail,
+.dependency-gate__feedback,
+.dependency-gate__hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-base);
+  line-height: 1.65;
+}
+
+.dependency-gate__detail,
+.dependency-gate__feedback {
+  margin-top: 8px;
+}
+
+.dependency-gate__feedback {
+  color: var(--primary);
+}
+
+.dependency-gate__actions,
+.dependency-gate__progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.dependency-gate__progress {
+  color: var(--text-secondary);
+}
+
+.dependency-gate__button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-base);
+  font-size: var(--font-size-base);
+  cursor: pointer;
+}
+
+.dependency-gate__button--primary {
+  border-color: var(--primary);
+  background-color: var(--primary);
+  color: #fff;
+}
+
+.dependency-gate__button--secondary {
+  border-color: var(--separator);
+  background-color: var(--bg);
+  color: var(--text-primary);
+}
+
+.dependency-gate__button--link {
+  width: 100%;
+  border-color: transparent;
+  background: transparent;
+  color: var(--primary);
+}
+
+.dependency-gate__button:hover {
+  filter: brightness(1.06);
+}
+
+.installing-dots {
+  display: inline-flex;
+  width: 1.2em;
+  margin-left: 1px;
+  justify-content: flex-start;
+}
+
+.installing-dots span {
+  animation: installing-dot-pulse 1.2s infinite ease-in-out;
+  opacity: 0.25;
+}
+
+.installing-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.installing-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes installing-dot-pulse {
+  0%,
+  75%,
+  100% {
+    opacity: 0.25;
+  }
+  35% {
+    opacity: 1;
+  }
+}
+
+.dependency-gate__hint {
+  margin-top: 20px;
+  font-size: var(--font-size-small);
+}
+
+.dependency-gate__spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--separator);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: dependency-spin 0.8s linear infinite;
+}
+
+@keyframes dependency-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>
