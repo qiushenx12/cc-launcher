@@ -54,8 +54,12 @@ import ProjectSidebar from './ProjectSidebar.vue'
 import ModuleToolbar from './ModuleToolbar.vue'
 import ProjectTerminalArea from './ProjectTerminalArea.vue'
 import RightSidebar from './RightSidebar.vue'
+import type { CliKind } from '@/types/cli'
 
 const store = useProjectStore()
+const props = defineProps<{
+  cliKind: CliKind
+}>()
 const emit = defineEmits<{
   (event: 'open-settings'): void
 }>()
@@ -131,8 +135,11 @@ watch(rightDivider.isDragging, async (dragging) => {
 
 onMounted(async () => {
   await loadWidths()
-  store.loadProjects()
 })
+
+watch(() => props.cliKind, (kind) => {
+  store.setActiveCliKind(kind)
+}, { immediate: true })
 </script>
 
 <style scoped>

@@ -7,7 +7,7 @@
     <header class="right-sidebar__tabs">
       <div class="right-sidebar__tab-strip">
         <button
-          v-for="tab in store.sidebarTabs"
+          v-for="tab in store.visibleSidebarTabs"
           :key="tab.id"
           class="right-sidebar__tab"
           :class="{ active: tab.id === store.activeSidebarTabId }"
@@ -103,7 +103,7 @@ const FilePanel = defineComponent({
   },
   setup(props) {
     const projectStore = useProjectStore()
-    const tab = computed(() => projectStore.sidebarTabs.find((item) => item.id === props.tabId))
+    const tab = computed(() => projectStore.visibleSidebarTabs.find((item) => item.id === props.tabId))
     const isMarkdown = computed(() => {
       const lang = tab.value?.language
       return lang === 'markdown'
@@ -163,7 +163,7 @@ const TerminalPanel = defineComponent({
   },
   setup(props) {
     const projectStore = useProjectStore()
-    const tab = computed(() => projectStore.sidebarTabs.find((item) => item.id === props.tabId))
+    const tab = computed(() => projectStore.visibleSidebarTabs.find((item) => item.id === props.tabId))
     return () => {
       const terminalId = tab.value?.terminalId
       return h('div', { class: 'terminal-panel' }, terminalId
@@ -180,7 +180,7 @@ const BrowserPanel = defineComponent({
   setup(props) {
     const projectStore = useProjectStore()
     const inputValue = ref('')
-    const tab = computed(() => projectStore.sidebarTabs.find((item) => item.id === props.tabId))
+    const tab = computed(() => projectStore.visibleSidebarTabs.find((item) => item.id === props.tabId))
     const canGoBack = computed(() => {
       const current = tab.value
       if (!current?.browserHistory) return false

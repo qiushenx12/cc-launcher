@@ -5,15 +5,44 @@
     :class="{ 'project-terminal--drag-over': dragOver }"
   >
     <div v-if="!store.activeProject" class="project-terminal__empty">
-      <button class="btn btn-primary" @click="store.pickAndAddProject">
-        选择项目目录
-      </button>
+      <div
+        v-if="store.activeCliKind === 'codex'"
+        class="project-terminal__empty-title"
+      >
+        CodeX 会同步桌面版和 CLI 的共享会话。请先选择项目目录，启动器会按目录加载真实会话。
+      </div>
+      <div class="project-terminal__actions">
+        <button class="btn btn-primary" @click="store.pickAndAddProject">
+          选择项目目录
+        </button>
+        <button
+          v-if="store.activeCliKind === 'codex'"
+          class="btn btn-secondary"
+          @click="store.pickAndResumeCodexSession"
+        >
+          选择目录并原生恢复
+        </button>
+      </div>
     </div>
 
     <div v-else-if="!store.activeSession" class="project-terminal__empty">
-      <button class="btn btn-primary" @click="store.createSession()">
-        新建项目会话
-      </button>
+      <div class="project-terminal__actions">
+        <button class="btn btn-primary" @click="store.createSession()">新建项目会话</button>
+        <button
+          v-if="store.activeCliKind === 'codex'"
+          class="btn btn-secondary"
+          @click="store.resumeCodexSession()"
+        >
+          原生恢复会话
+        </button>
+        <button
+          v-if="store.activeCliKind === 'codex' || store.activeCliKind === 'opencode'"
+          class="btn btn-secondary"
+          @click="store.refreshActiveCliHistory()"
+        >
+          刷新真实会话
+        </button>
+      </div>
     </div>
 
     <template v-else>
@@ -49,6 +78,20 @@
             >
               继续对话
             </button>
+            <button
+              v-if="store.activeCliKind === 'codex'"
+              class="btn btn-secondary project-terminal__action-btn"
+              @click="store.resumeCodexSession()"
+            >
+              原生恢复
+            </button>
+            <button
+              v-if="store.activeCliKind === 'codex' || store.activeCliKind === 'opencode'"
+              class="btn btn-secondary project-terminal__action-btn"
+              @click="store.refreshActiveCliHistory()"
+            >
+              刷新真实会话
+            </button>
           </div>
         </template>
       </div>
@@ -76,13 +119,15 @@ const activeTerminalId = computed(() => {
 })
 
 const terminalTabIds = computed(() =>
-  Object.values(store.sessionTerminalIds).filter((id): id is number => typeof id === 'number')
+  store.visibleSessions
+    .map((session) => store.sessionTerminalIds[session.id])
+    .filter((id): id is number => typeof id === 'number')
 )
 
 const isFreshProject = computed(() => {
   const session = store.activeSession
   if (!session || activeTerminalId.value) return false
-  return store.sessionsOfActiveProject.every((s) => !s.claudeSessionId)
+  return store.sessionsOfActiveProject.every((s) => !s.nativeSessionId && !s.claudeSessionId)
 })
 
 function basename(path: string): string {

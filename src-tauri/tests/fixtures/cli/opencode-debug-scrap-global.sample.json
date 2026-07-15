@@ -1,0 +1,21 @@
+[
+  {
+    "id": "global",
+    "worktree": "/",
+    "time": {
+      "created": 1700000000000,
+      "updated": 1700000001000
+    },
+    "sandboxes": []
+  },
+  {
+    "id": "project-fixture",
+    "worktree": "D:\\work\\regular-project",
+    "vcs": "git",
+    "time": {
+      "created": 1700000000000,
+      "updated": 1700000001000
+    },
+    "sandboxes": []
+  }
+]

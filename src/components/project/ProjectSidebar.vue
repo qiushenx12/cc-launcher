@@ -10,7 +10,8 @@
         :title="projectListExpanded ? '收起项目列表' : '展开项目列表'"
         @click="projectListExpanded = !projectListExpanded"
       >
-        项目 <span>{{ projectListExpanded ? '▾' : '▸' }}</span>
+        {{ CLI_DESCRIPTORS[store.activeCliKind].label }} 项目
+        <span>{{ projectListExpanded ? '▾' : '▸' }}</span>
       </button>
       <div class="project-sidebar__actions">
         <button
@@ -130,7 +131,7 @@
       </div>
 
       <button
-        v-if="store.projects.length === 0"
+        v-if="store.visibleProjects.length === 0"
         class="project-empty"
         @click="store.pickAndAddProject"
       >
@@ -151,6 +152,7 @@ import { useProjectStore } from '@/stores/project'
 import type { Project, ProjectSession, ProjectSortMode } from '@/stores/project'
 import { useTauriDrop, isInside } from '@/composables/useTauriDrop'
 import { useDragReorder } from '@/composables/useDragReorder'
+import { CLI_DESCRIPTORS } from '@/types/cli'
 
 const store = useProjectStore()
 const emit = defineEmits<{
@@ -183,7 +185,7 @@ const props = defineProps<{
 }>()
 
 const sortedProjects = computed(() =>
-  [...store.projects].sort((a, b) => {
+  [...store.visibleProjects].sort((a, b) => {
     if (store.projectSortMode === 'time') {
       const byTime = latestSessionTimestamp(b.id) - latestSessionTimestamp(a.id)
       if (byTime !== 0) return byTime
@@ -214,7 +216,7 @@ const {
 
 const sessionsByProject = computed<Record<string, ProjectSession[]>>(() => {
   const groups: Record<string, ProjectSession[]> = {}
-  for (const session of store.sessions) {
+  for (const session of store.visibleSessions) {
     if (!session?.projectId) continue
     const group = groups[session.projectId] ?? []
     group.push(session)

@@ -19,10 +19,10 @@ use winreg::{
 };
 
 #[cfg(windows)]
-use windows::{
-    Win32::{
-        Foundation::LPARAM,
-        UI::WindowsAndMessaging::{SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE},
+use windows::Win32::{
+    Foundation::LPARAM,
+    UI::WindowsAndMessaging::{
+        SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
     },
 };
 
@@ -136,6 +136,26 @@ pub fn apply_env_vars(vars: HashMap<String, String>, scope: String) -> Result<()
     }
 }
 
+pub(crate) fn read_user_env_var(name: &str) -> Result<Option<String>, String> {
+    #[cfg(windows)]
+    {
+        let key = RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey(r"Environment")
+            .map_err(|error| format!("无法读取当前用户环境变量：{error}"))?;
+        match key.get_value::<String, _>(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!("无法读取环境变量 '{name}'：{error}")),
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = name;
+        Err("Registry operations are only supported on Windows".to_string())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Encoding helper
 // ---------------------------------------------------------------------------
@@ -145,7 +165,5 @@ pub fn apply_env_vars(vars: HashMap<String, String>, scope: String) -> Result<()
 #[cfg(windows)]
 fn encode_reg_expand_sz(value: &str) -> Vec<u8> {
     let wide: Vec<u16> = value.encode_utf16().chain(std::iter::once(0u16)).collect();
-    wide.iter()
-        .flat_map(|w| w.to_le_bytes())
-        .collect()
+    wide.iter().flat_map(|w| w.to_le_bytes()).collect()
 }

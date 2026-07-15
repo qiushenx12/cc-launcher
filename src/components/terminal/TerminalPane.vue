@@ -6,6 +6,10 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { useTerminalStore } from '@/stores/terminal'
+import {
+  createTerminalOutputWriter,
+  type TerminalOutputWriter,
+} from '@/utils/codexTerminalOutput'
 
 const props = defineProps<{
   tabId: number
@@ -21,6 +25,7 @@ let fitAddon: FitAddon | null = null
 let resizeObserver: ResizeObserver | null = null
 let intersectionObserver: IntersectionObserver | null = null
 let retryTimer: ReturnType<typeof setTimeout> | null = null
+let outputWriter: TerminalOutputWriter | null = null
 let isFirstIntersection = true
 const MAX_RETRIES = 40  // 40 × 50ms = 2 seconds max wait
 
@@ -50,11 +55,12 @@ function initTerminal() {
     return
   }
 
+  const cliKind = store.tabs.find(tab => tab.id === props.tabId)?.cliKind ?? 'claude'
   initialized.value = true
   term = new Terminal({
     fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, monospace',
     fontSize: store.fontSize,
-    cursorBlink: true,
+    cursorBlink: cliKind !== 'codex',
     allowTransparency: false,
     scrollback: 5000,
     theme: {
@@ -147,9 +153,11 @@ function initTerminal() {
   })
 
   // Register writer in store — this also flushes any buffered output
-  store.registerWriter(props.tabId, (bytes: Uint8Array) => {
-    t.write(bytes)
+  outputWriter = createTerminalOutputWriter(cliKind, bytes => t.write(bytes), {
+    forceAltScreen: cliKind === 'codex',
+    gateCursorDuringOutput: cliKind === 'codex',
   })
+  store.registerWriter(props.tabId, bytes => outputWriter?.write(bytes))
 
   resizeObserver = new ResizeObserver(() => {
     // Never fit when the container has zero dimensions — this happens when the
@@ -200,6 +208,8 @@ onBeforeUnmount(() => {
   }
   intersectionObserver?.disconnect()
   intersectionObserver = null
+  outputWriter?.dispose()
+  outputWriter = null
   store.unregisterWriter(props.tabId)
   resizeObserver?.disconnect()
   term?.dispose()

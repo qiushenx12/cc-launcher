@@ -3,12 +3,14 @@
 //! Provides command parsing, permission checking, message routing,
 //! and snapshot persistence for inter-tab CLI communication via `tab-*` prefix commands.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex as StdMutex;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::State;
+
+use crate::cli_contract::CliKind;
 
 // ── Re-exports for convenience by callers ──────────────────────────────────────
 
@@ -20,10 +22,19 @@ pub use super::pty::PtySession;
 /// Parsed `tab-*` command variants.
 #[derive(Debug, Clone)]
 pub enum TabCommand {
-    Send { to: u32, message: String, wait_seconds: Option<u64> },
+    Send {
+        to: u32,
+        message: String,
+        wait_seconds: Option<u64>,
+    },
     List,
-    Read { from: u32, lines: usize },
-    Presence { to: u32 },
+    Read {
+        from: u32,
+        lines: usize,
+    },
+    Presence {
+        to: u32,
+    },
 }
 
 /// Per-tab permission configuration. Stored inline in PtySession.
@@ -59,7 +70,10 @@ pub enum PendingAction {
     /// Remove a pending reply entry at the given index for the given caller tab.
     RemoveReply { caller_tab: u32, index: usize },
     /// Add a new pending reply entry.
-    AddReply { caller_tab: u32, entry: PendingReply },
+    AddReply {
+        caller_tab: u32,
+        entry: PendingReply,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -91,6 +105,8 @@ pub struct CanvasConnection {
 /// Full snapshot of all terminal tabs for a project.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TerminalSnapshot {
+    #[serde(default)]
+    pub cli_kind: CliKind,
     pub project_path: String,
     pub timestamp: String,
     pub tabs: Vec<SnapshotTabEntry>,
@@ -109,6 +125,8 @@ pub struct SnapshotTabEntry {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SnapshotEntry {
     pub id: String,
+    #[serde(default)]
+    pub cli_kind: CliKind,
     pub project_path: String,
     pub timestamp: String,
 }
@@ -118,32 +136,50 @@ pub struct SnapshotEntry {
 /// Parse a line that starts with `tab-`. Returns `None` if not a tab command.
 pub fn parse_tab_command(line: &str) -> Option<TabCommand> {
     let trimmed = line.trim();
-    if trimmed.starts_with("tab-send") { return parse_tab_send(trimmed); }
-    if trimmed == "tab-list" { return Some(TabCommand::List); }
-    if trimmed.starts_with("tab-read") { return parse_tab_read(trimmed); }
-    if trimmed.starts_with("tab-presence") { return parse_tab_presence(trimmed); }
+    if trimmed.starts_with("tab-send") {
+        return parse_tab_send(trimmed);
+    }
+    if trimmed == "tab-list" {
+        return Some(TabCommand::List);
+    }
+    if trimmed.starts_with("tab-read") {
+        return parse_tab_read(trimmed);
+    }
+    if trimmed.starts_with("tab-presence") {
+        return parse_tab_presence(trimmed);
+    }
     None
 }
 
 fn parse_tab_send(line: &str) -> Option<TabCommand> {
     let rest = line.strip_prefix("tab-send")?.trim();
-    if rest.is_empty() { return None; }
+    if rest.is_empty() {
+        return None;
+    }
     let to: u32 = extract_flag_u32(rest, "--to")?;
     let (message, _) = extract_quoted_message(rest)?;
     let wait_seconds = extract_flag_u64(rest, "--wait");
-    Some(TabCommand::Send { to, message, wait_seconds })
+    Some(TabCommand::Send {
+        to,
+        message,
+        wait_seconds,
+    })
 }
 
 fn extract_quoted_message(s: &str) -> Option<(String, String)> {
     let first = s.find('"')?;
     let last = s.rfind('"')?;
-    if last <= first { return None; }
+    if last <= first {
+        return None;
+    }
     Some((s[first + 1..last].to_string(), s[last + 1..].to_string()))
 }
 
 fn parse_tab_read(line: &str) -> Option<TabCommand> {
     let rest = line.strip_prefix("tab-read")?.trim();
-    if rest.is_empty() { return None; }
+    if rest.is_empty() {
+        return None;
+    }
     let from = extract_flag_u32(rest, "--from")?;
     let lines = extract_flag_usize(rest, "--lines")?;
     Some(TabCommand::Read { from, lines })
@@ -151,24 +187,41 @@ fn parse_tab_read(line: &str) -> Option<TabCommand> {
 
 fn parse_tab_presence(line: &str) -> Option<TabCommand> {
     let rest = line.strip_prefix("tab-presence")?.trim();
-    if rest.is_empty() { return None; }
+    if rest.is_empty() {
+        return None;
+    }
     let to = extract_flag_u32(rest, "--to")?;
     Some(TabCommand::Presence { to })
 }
 
 fn extract_flag_u32(s: &str, flag: &str) -> Option<u32> {
     let idx = s.find(flag)?;
-    s[idx + flag.len()..].trim().split_whitespace().next()?.parse().ok()
+    s[idx + flag.len()..]
+        .trim()
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
 }
 
 fn extract_flag_u64(s: &str, flag: &str) -> Option<u64> {
     let idx = s.find(flag)?;
-    s[idx + flag.len()..].trim().split_whitespace().next()?.parse().ok()
+    s[idx + flag.len()..]
+        .trim()
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
 }
 
 fn extract_flag_usize(s: &str, flag: &str) -> Option<usize> {
     let idx = s.find(flag)?;
-    s[idx + flag.len()..].trim().split_whitespace().next()?.parse().ok()
+    s[idx + flag.len()..]
+        .trim()
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
 }
 
 // ── Permission Checking ───────────────────────────────────────────────────────
@@ -194,8 +247,12 @@ pub fn check_permission(
     caller_id: u32,
     target_id: Option<u32>,
 ) -> Result<(), String> {
-    let perm = permissions.get(&caller_id).ok_or_else(|| "Permission denied".to_string())?;
-    if !perm.enabled { return Err("Permission denied".to_string()); }
+    let perm = permissions
+        .get(&caller_id)
+        .ok_or_else(|| "Permission denied".to_string())?;
+    if !perm.enabled {
+        return Err("Permission denied".to_string());
+    }
     if !perm.allowed_targets.is_empty() {
         if let Some(tid) = target_id {
             if !perm.allowed_targets.contains(&tid) {
@@ -238,19 +295,34 @@ pub fn execute_command(
     mgr: &mut PtyManager,
 ) -> Result<CommandResult, String> {
     match cmd {
-        TabCommand::Send { to, message, wait_seconds } => {
+        TabCommand::Send {
+            to,
+            message,
+            wait_seconds,
+        } => {
             // Permission check
             {
-                let caller_session = mgr.sessions.get_mut(&caller_id)
+                let caller_session = mgr
+                    .sessions
+                    .get_mut(&caller_id)
                     .ok_or_else(|| format!("Caller tab {} not found", caller_id))?;
                 check_permission_inline(caller_session, Some(*to))?;
             }
 
+            ensure_same_cli_kind(mgr, caller_id, *to)?;
+
             // Check target exists and is alive
             let target_alive = {
-                let target = mgr.sessions.get_mut(to)
+                let target = mgr
+                    .sessions
+                    .get_mut(to)
                     .ok_or_else(|| format!("Target tab {} not found", to))?;
-                if target.child.try_wait().map_err(|e| format!("try_wait failed: {}", e))?.is_some() {
+                if target
+                    .child
+                    .try_wait()
+                    .map_err(|e| format!("try_wait failed: {}", e))?
+                    .is_some()
+                {
                     return Err(format!("Target tab {} is not alive", to));
                 }
                 true
@@ -259,11 +331,15 @@ pub fn execute_command(
 
             // Write message to target PTY
             {
-                let target = mgr.sessions.get_mut(to)
+                let target = mgr
+                    .sessions
+                    .get_mut(to)
                     .ok_or_else(|| format!("Target tab {} not found", to))?;
                 use std::io::Write;
                 let payload = format!("{}\r\n", message);
-                target.writer.write_all(payload.as_bytes())
+                target
+                    .writer
+                    .write_all(payload.as_bytes())
                     .map_err(|e| format!("Write to target PTY failed: {}", e))?;
             }
 
@@ -278,21 +354,24 @@ pub fn execute_command(
                     caller_tab: caller_id,
                     entry: PendingReply {
                         msg_id,
-                        deadline: std::time::Instant::now() + std::time::Duration::from_secs(*wait_secs),
+                        deadline: std::time::Instant::now()
+                            + std::time::Duration::from_secs(*wait_secs),
                         caller_tab: caller_id,
                         responder_tab: *to,
                         original_message: message.clone(),
                     },
                 });
                 result.immediate_output = Some(format_message(&format!(
-                    "send: Message sent to tab {} (waiting for reply, timeout: {}s)", to, wait_secs
+                    "send: Message sent to tab {} (waiting for reply, timeout: {}s)",
+                    to, wait_secs
                 )));
                 Ok(result)
             } else {
                 // Immediate mode
                 Ok(CommandResult {
                     immediate_output: Some(format_result(
-                        cmd, &format!("Message sent to tab {} ({} bytes)", to, message.len()),
+                        cmd,
+                        &format!("Message sent to tab {} ({} bytes)", to, message.len()),
                     )),
                     pending_actions: Vec::new(),
                 })
@@ -301,23 +380,41 @@ pub fn execute_command(
 
         TabCommand::List => {
             {
-                let caller_session = mgr.sessions.get_mut(&caller_id)
+                let caller_session = mgr
+                    .sessions
+                    .get_mut(&caller_id)
                     .ok_or_else(|| format!("Caller tab {} not found", caller_id))?;
                 check_permission_inline(caller_session, None)?;
             }
 
+            let caller_kind = mgr
+                .sessions
+                .get(&caller_id)
+                .map(|session| session.cli_kind)
+                .ok_or_else(|| format!("Caller tab {} not found", caller_id))?;
             let mut lines = Vec::new();
             let tab_ids: Vec<u32> = mgr.sessions.keys().copied().collect();
             for tid in tab_ids {
                 if let Some(session) = mgr.sessions.get_mut(&tid) {
+                    if session.cli_kind != caller_kind {
+                        continue;
+                    }
                     let alive = session.child.try_wait().map_or(false, |r| r.is_none());
                     let title = session.title.lock().map_or_else(
                         |_| "Terminal".to_string(),
-                        |t| if t.is_empty() { "Terminal".to_string() } else { t.clone() },
+                        |t| {
+                            if t.is_empty() {
+                                "Terminal".to_string()
+                            } else {
+                                t.clone()
+                            }
+                        },
                     );
                     lines.push(format!(
                         "Tab {} | {} | {}",
-                        tid, title, if alive { "alive" } else { "dead" },
+                        tid,
+                        title,
+                        if alive { "alive" } else { "dead" },
                     ));
                 }
             }
@@ -336,13 +433,19 @@ pub fn execute_command(
 
         TabCommand::Read { from, lines: n } => {
             {
-                let caller_session = mgr.sessions.get_mut(&caller_id)
+                let caller_session = mgr
+                    .sessions
+                    .get_mut(&caller_id)
                     .ok_or_else(|| format!("Caller tab {} not found", caller_id))?;
                 check_permission_inline(caller_session, Some(*from))?;
             }
 
+            ensure_same_cli_kind(mgr, caller_id, *from)?;
+
             let output = {
-                let target = mgr.sessions.get(from)
+                let target = mgr
+                    .sessions
+                    .get(from)
                     .ok_or_else(|| format!("Target tab {} not found", from))?;
                 let deque = target.output_lines.lock().map_err(|e| e.to_string())?;
                 let captured: Vec<String> = deque.iter().rev().take(*n).cloned().collect();
@@ -363,10 +466,14 @@ pub fn execute_command(
 
         TabCommand::Presence { to } => {
             {
-                let caller_session = mgr.sessions.get_mut(&caller_id)
+                let caller_session = mgr
+                    .sessions
+                    .get_mut(&caller_id)
                     .ok_or_else(|| format!("Caller tab {} not found", caller_id))?;
                 check_permission_inline(caller_session, None)?;
             }
+
+            ensure_same_cli_kind(mgr, caller_id, *to)?;
 
             let output = match mgr.sessions.get_mut(to) {
                 Some(session) => {
@@ -388,6 +495,21 @@ pub fn execute_command(
     }
 }
 
+fn ensure_same_cli_kind(mgr: &PtyManager, caller_id: u32, target_id: u32) -> Result<(), String> {
+    let caller = mgr
+        .sessions
+        .get(&caller_id)
+        .ok_or_else(|| format!("Caller tab {} not found", caller_id))?;
+    let target = mgr
+        .sessions
+        .get(&target_id)
+        .ok_or_else(|| format!("Target tab {} not found", target_id))?;
+    if caller.cli_kind != target.cli_kind {
+        return Err("Cross-CLI tab communication is not allowed".to_string());
+    }
+    Ok(())
+}
+
 /// When a `tab-send` is processed, check if the target has any pending replies
 /// waiting for a response from the current sender. If found, write reply notification
 /// to the original caller's PTY and return actions to remove matched entries.
@@ -407,7 +529,8 @@ fn check_and_fire_pending_replies(
                 if let Some(session) = mgr.sessions.get_mut(&target_id) {
                     use std::io::Write;
                     let notification = format_message(&format!(
-                        "send: Reply received from tab {}: {}", caller_id, message
+                        "send: Reply received from tab {}: {}",
+                        caller_id, message
                     ));
                     let _ = session.writer.write_all(notification.as_bytes());
                 }
@@ -431,7 +554,10 @@ pub fn set_tab_permission(
 ) -> Result<(), String> {
     let mut mgr = state.lock().map_err(|e| e.to_string())?;
     if let Some(session) = mgr.sessions.get_mut(&tab_id) {
-        session.permission = TabPermission { enabled, allowed_targets };
+        session.permission = TabPermission {
+            enabled,
+            allowed_targets,
+        };
         Ok(())
     } else {
         Err(format!("Tab {} does not exist", tab_id))
@@ -476,74 +602,147 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 #[tauri::command]
 pub fn save_terminal_snapshot(
     project_path: String,
+    cli_kind: Option<CliKind>,
     canvas: Option<CanvasSnapshot>,
     roles: Option<HashMap<u32, AgentRole>>,
     state: State<'_, StdMutex<PtyManager>>,
 ) -> Result<(), String> {
+    let cli_kind = cli_kind.unwrap_or_default();
     let mgr = state.lock().map_err(|e| e.to_string())?;
+    let valid_tab_ids: HashSet<u32> = mgr
+        .sessions
+        .iter()
+        .filter_map(|(&tab_id, session)| (session.cli_kind == cli_kind).then_some(tab_id))
+        .collect();
+    let mut filtered_canvas = canvas.unwrap_or_default();
+    filtered_canvas
+        .items
+        .retain(|item| valid_tab_ids.contains(&item.tab_id));
+    filtered_canvas.connections.retain(|connection| {
+        valid_tab_ids.contains(&connection.from) && valid_tab_ids.contains(&connection.to)
+    });
     let snapshot = TerminalSnapshot {
+        cli_kind,
         project_path: project_path.clone(),
-        timestamp: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
-        tabs: mgr.sessions.iter().map(|(&tab_id, session)| {
-            let title = session.title.lock().map_or_else(|_| format!("Tab {}", tab_id), |t| {
-                if t.is_empty() { format!("Tab {}", tab_id) } else { t.clone() }
-            });
-            SnapshotTabEntry {
-                tab_id,
-                title,
-                session_id: session.session_id.clone(),
-                permission: session.permission.clone(),
-                role: roles.as_ref().and_then(|r| r.get(&tab_id)).cloned(),
-            }
-        }).collect(),
-        canvas: canvas.unwrap_or_default(),
+        timestamp: chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string(),
+        tabs: mgr
+            .sessions
+            .iter()
+            .filter(|(&tab_id, _)| valid_tab_ids.contains(&tab_id))
+            .map(|(&tab_id, session)| {
+                let title = session.title.lock().map_or_else(
+                    |_| format!("Tab {}", tab_id),
+                    |t| {
+                        if t.is_empty() {
+                            format!("Tab {}", tab_id)
+                        } else {
+                            t.clone()
+                        }
+                    },
+                );
+                SnapshotTabEntry {
+                    tab_id,
+                    title,
+                    session_id: session.session_id.clone(),
+                    permission: session.permission.clone(),
+                    role: roles.as_ref().and_then(|r| r.get(&tab_id)).cloned(),
+                }
+            })
+            .collect(),
+        canvas: filtered_canvas,
     };
 
     let snapshot_path = snapshot_dir()?;
-    let file_name = format!("{}.json", path_to_id(&project_path));
+    let file_name = format!("{}-{}.json", cli_kind.as_str(), path_to_id(&project_path));
     let full_path = snapshot_path.join(&file_name);
     let json = serde_json::to_string_pretty(&snapshot)
         .map_err(|e| format!("Failed to serialize snapshot: {}", e))?;
-    std::fs::write(&full_path, json)
-        .map_err(|e| format!("Failed to write snapshot file {}: {}", full_path.display(), e))?;
+    std::fs::write(&full_path, json).map_err(|e| {
+        format!(
+            "Failed to write snapshot file {}: {}",
+            full_path.display(),
+            e
+        )
+    })?;
     Ok(())
 }
 
 #[tauri::command]
 pub fn load_terminal_snapshot(
     project_path: String,
+    cli_kind: Option<CliKind>,
 ) -> Result<Option<TerminalSnapshot>, String> {
+    let cli_kind = cli_kind.unwrap_or_default();
     let snapshot_path = snapshot_dir()?;
-    let file_name = format!("{}.json", path_to_id(&project_path));
-    let full_path = snapshot_path.join(&file_name);
-    if !full_path.exists() { return Ok(None); }
-    let content = std::fs::read_to_string(&full_path)
-        .map_err(|e| format!("Failed to read snapshot file {}: {}", full_path.display(), e))?;
+    let file_name = format!("{}-{}.json", cli_kind.as_str(), path_to_id(&project_path));
+    let mut full_path = snapshot_path.join(&file_name);
+    if !full_path.exists() && cli_kind == CliKind::Claude {
+        // Phase B prefixes snapshots with cli_kind. Keep legacy unprefixed
+        // snapshots readable as Claude Code data until the next save.
+        let legacy_path = snapshot_path.join(format!("{}.json", path_to_id(&project_path)));
+        if legacy_path.exists() {
+            full_path = legacy_path;
+        }
+    }
+    if !full_path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(&full_path).map_err(|e| {
+        format!(
+            "Failed to read snapshot file {}: {}",
+            full_path.display(),
+            e
+        )
+    })?;
     let snapshot: TerminalSnapshot = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse snapshot JSON: {}", e))?;
+    if snapshot.cli_kind != cli_kind {
+        return Ok(None);
+    }
     Ok(Some(snapshot))
 }
 
 #[tauri::command]
-pub fn list_terminal_snapshots() -> Result<Vec<SnapshotEntry>, String> {
+pub fn list_terminal_snapshots(cli_kind: Option<CliKind>) -> Result<Vec<SnapshotEntry>, String> {
+    let cli_kind = cli_kind.unwrap_or_default();
     let snapshot_path = snapshot_dir()?;
-    let mut entries = Vec::new();
+    let mut entries = HashMap::<String, SnapshotEntry>::new();
     for entry in std::fs::read_dir(&snapshot_path)
         .map_err(|e| format!("Failed to read snapshot directory: {}", e))?
     {
         let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") { continue; }
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
         let content = std::fs::read_to_string(&path)
             .map_err(|e| format!("Failed to read file {}: {}", path.display(), e))?;
         if let Ok(snapshot) = serde_json::from_str::<TerminalSnapshot>(&content) {
-            entries.push(SnapshotEntry {
-                id: path_to_id(&snapshot.project_path),
+            if snapshot.cli_kind != cli_kind {
+                continue;
+            }
+            let id = format!(
+                "{}-{}",
+                snapshot.cli_kind.as_str(),
+                path_to_id(&snapshot.project_path)
+            );
+            let candidate = SnapshotEntry {
+                id: id.clone(),
+                cli_kind: snapshot.cli_kind,
                 project_path: snapshot.project_path,
                 timestamp: snapshot.timestamp,
-            });
+            };
+            if entries
+                .get(&id)
+                .map_or(true, |current| candidate.timestamp > current.timestamp)
+            {
+                entries.insert(id, candidate);
+            }
         }
     }
+    let mut entries: Vec<_> = entries.into_values().collect();
     entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     Ok(entries)
 }
@@ -573,7 +772,7 @@ pub struct VirtualAgent {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LaunchConfig {
-    pub agent_type: String,  // "claude" | "terminal"
+    pub agent_type: String, // "claude" | "terminal"
     pub cmd: Vec<String>,
     pub env: HashMap<String, String>,
     pub cwd: Option<String>,
@@ -613,12 +812,14 @@ fn preset_dir() -> Result<std::path::PathBuf, String> {
 pub fn list_presets() -> Result<Vec<PresetEntry>, String> {
     let dir = preset_dir()?;
     let mut entries = Vec::new();
-    for entry in std::fs::read_dir(&dir)
-        .map_err(|e| format!("Failed to read preset directory: {}", e))?
+    for entry in
+        std::fs::read_dir(&dir).map_err(|e| format!("Failed to read preset directory: {}", e))?
     {
         let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") { continue; }
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
         let content = std::fs::read_to_string(&path)
             .map_err(|e| format!("Failed to read file {}: {}", path.display(), e))?;
         if let Ok(preset) = serde_json::from_str::<OrchestrationPreset>(&content) {
@@ -653,8 +854,13 @@ pub fn delete_preset(id: String) -> Result<(), String> {
     let file_name = format!("{}.json", id);
     let full_path = dir.join(&file_name);
     if full_path.exists() {
-        std::fs::remove_file(&full_path)
-            .map_err(|e| format!("Failed to delete preset file {}: {}", full_path.display(), e))?;
+        std::fs::remove_file(&full_path).map_err(|e| {
+            format!(
+                "Failed to delete preset file {}: {}",
+                full_path.display(),
+                e
+            )
+        })?;
     }
     Ok(())
 }
@@ -664,7 +870,9 @@ pub fn load_preset(id: String) -> Result<Option<OrchestrationPreset>, String> {
     let dir = preset_dir()?;
     let file_name = format!("{}.json", id);
     let full_path = dir.join(&file_name);
-    if !full_path.exists() { return Ok(None); }
+    if !full_path.exists() {
+        return Ok(None);
+    }
     let content = std::fs::read_to_string(&full_path)
         .map_err(|e| format!("Failed to read preset file {}: {}", full_path.display(), e))?;
     let preset: OrchestrationPreset = serde_json::from_str(&content)
@@ -682,7 +890,11 @@ mod tests {
     fn test_parse_tab_send() {
         let cmd = parse_tab_command(r#"tab-send --to 2 "hello world""#).unwrap();
         match cmd {
-            TabCommand::Send { to, message, wait_seconds } => {
+            TabCommand::Send {
+                to,
+                message,
+                wait_seconds,
+            } => {
                 assert_eq!(to, 2);
                 assert_eq!(message, "hello world");
                 assert_eq!(wait_seconds, None);
@@ -695,7 +907,11 @@ mod tests {
     fn test_parse_tab_send_with_wait() {
         let cmd = parse_tab_command(r#"tab-send --to 3 "run tests" --wait 30"#).unwrap();
         match cmd {
-            TabCommand::Send { to, message, wait_seconds } => {
+            TabCommand::Send {
+                to,
+                message,
+                wait_seconds,
+            } => {
                 assert_eq!(to, 3);
                 assert_eq!(message, "run tests");
                 assert_eq!(wait_seconds, Some(30));
@@ -706,14 +922,20 @@ mod tests {
 
     #[test]
     fn test_parse_tab_list() {
-        assert!(matches!(parse_tab_command("tab-list").unwrap(), TabCommand::List));
+        assert!(matches!(
+            parse_tab_command("tab-list").unwrap(),
+            TabCommand::List
+        ));
     }
 
     #[test]
     fn test_parse_tab_read() {
         let cmd = parse_tab_command("tab-read --from 1 --lines 50").unwrap();
         match cmd {
-            TabCommand::Read { from, lines } => { assert_eq!(from, 1); assert_eq!(lines, 50); }
+            TabCommand::Read { from, lines } => {
+                assert_eq!(from, 1);
+                assert_eq!(lines, 50);
+            }
             _ => panic!("Expected Read"),
         }
     }
@@ -721,7 +943,10 @@ mod tests {
     #[test]
     fn test_parse_tab_presence() {
         let cmd = parse_tab_command("tab-presence --to 4").unwrap();
-        match cmd { TabCommand::Presence { to } => assert_eq!(to, 4), _ => panic!("Expected Presence") }
+        match cmd {
+            TabCommand::Presence { to } => assert_eq!(to, 4),
+            _ => panic!("Expected Presence"),
+        }
     }
 
     #[test]
@@ -734,7 +959,13 @@ mod tests {
     #[test]
     fn test_permission_denied_when_disabled() {
         let mut perms = HashMap::new();
-        perms.insert(1, TabPermission { enabled: false, allowed_targets: vec![2, 3] });
+        perms.insert(
+            1,
+            TabPermission {
+                enabled: false,
+                allowed_targets: vec![2, 3],
+            },
+        );
         assert!(check_permission(&perms, 1, Some(2)).is_err());
     }
 
@@ -747,7 +978,13 @@ mod tests {
     #[test]
     fn test_permission_target_not_allowed() {
         let mut perms = HashMap::new();
-        perms.insert(1, TabPermission { enabled: true, allowed_targets: vec![2] });
+        perms.insert(
+            1,
+            TabPermission {
+                enabled: true,
+                allowed_targets: vec![2],
+            },
+        );
         assert!(check_permission(&perms, 1, Some(3)).is_err());
         assert!(check_permission(&perms, 1, Some(2)).is_ok());
     }
@@ -755,13 +992,22 @@ mod tests {
     #[test]
     fn test_permission_empty_allowed_targets_allows_any() {
         let mut perms = HashMap::new();
-        perms.insert(1, TabPermission { enabled: true, allowed_targets: vec![] });
+        perms.insert(
+            1,
+            TabPermission {
+                enabled: true,
+                allowed_targets: vec![],
+            },
+        );
         assert!(check_permission(&perms, 1, Some(99)).is_ok());
     }
 
     #[test]
     fn test_format_result() {
-        assert_eq!(format_result(&TabCommand::List, "3 tabs"), "[TAB-CMD] list: 3 tabs\r\n");
+        assert_eq!(
+            format_result(&TabCommand::List, "3 tabs"),
+            "[TAB-CMD] list: 3 tabs\r\n"
+        );
     }
 
     #[test]
@@ -778,8 +1024,14 @@ mod tests {
     fn test_parse_send_wait_before_to() {
         let cmd = parse_tab_command(r#"tab-send --wait 10 --to 5 "msg""#).unwrap();
         match cmd {
-            TabCommand::Send { to, message, wait_seconds } => {
-                assert_eq!(to, 5); assert_eq!(message, "msg"); assert_eq!(wait_seconds, Some(10));
+            TabCommand::Send {
+                to,
+                message,
+                wait_seconds,
+            } => {
+                assert_eq!(to, 5);
+                assert_eq!(message, "msg");
+                assert_eq!(wait_seconds, Some(10));
             }
             _ => panic!("Expected Send"),
         }
@@ -789,7 +1041,10 @@ mod tests {
     fn test_parse_send_message_with_quotes_inside() {
         let cmd = parse_tab_command(r#"tab-send --to 1 "it's a \"test\"""#).unwrap();
         match cmd {
-            TabCommand::Send { to, message, .. } => { assert_eq!(to, 1); assert!(message.contains("test")); }
+            TabCommand::Send { to, message, .. } => {
+                assert_eq!(to, 1);
+                assert!(message.contains("test"));
+            }
             _ => panic!("Expected Send"),
         }
     }

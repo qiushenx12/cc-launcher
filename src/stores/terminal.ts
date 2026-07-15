@@ -3,12 +3,14 @@ import { ref, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import type { TerminalTab, PtyOutput, PtyStatus, PtyTitle } from '@/types/terminal'
+import type { CliKind } from '@/types/cli'
 
 export interface CreateTerminalTabOptions {
   scope?: TerminalTab['scope']
   projectSessionId?: string
   sidebarTabId?: string
   activate?: boolean
+  cliKind?: CliKind
 }
 
 export const useTerminalStore = defineStore('terminal', () => {
@@ -58,7 +60,9 @@ export const useTerminalStore = defineStore('terminal', () => {
 
     listenerReadyPromise = (async () => {
       await listen<PtyOutput>('pty_output', (event) => {
-        const { tab_id, data } = event.payload
+        const { tab_id, cli_kind, data } = event.payload
+        const tab = tabs.value.find((item) => item.id === tab_id)
+        if (tab && tab.cliKind !== cli_kind) return
 
         const binary = atob(data)
         const bytes = new Uint8Array(binary.length)
@@ -81,15 +85,15 @@ export const useTerminalStore = defineStore('terminal', () => {
       })
 
       await listen<PtyStatus>('pty_status', (event) => {
-        const { tab_id, alive } = event.payload
+        const { tab_id, cli_kind, alive } = event.payload
         const tab = tabs.value.find((t) => t.id === tab_id)
-        if (tab) tab.alive = alive
+        if (tab?.cliKind === cli_kind) tab.alive = alive
       })
 
       await listen<PtyTitle>('pty_title', (event) => {
-        const { tab_id, title, has_spinner } = event.payload
+        const { tab_id, cli_kind, title, has_spinner } = event.payload
         const tab = tabs.value.find((t) => t.id === tab_id)
-        if (!tab) return
+        if (!tab || tab.cliKind !== cli_kind) return
 
         // Mark this tab as a Claude session (it emits OSC 0 titles)
         claudeTabs.add(tab_id)
@@ -155,6 +159,7 @@ export const useTerminalStore = defineStore('terminal', () => {
       cols: 120,
       rows: 30,
       sessionId,
+      cliKind: options.cliKind ?? 'claude',
     })
 
     const tab: TerminalTab = {
@@ -169,6 +174,7 @@ export const useTerminalStore = defineStore('terminal', () => {
       scope: options.scope ?? 'terminal',
       projectSessionId: options.projectSessionId,
       sidebarTabId: options.sidebarTabId,
+      cliKind: options.cliKind ?? 'claude',
     }
     tabs.value.push(tab)
     if (options.activate !== false && tab.scope === 'terminal') {

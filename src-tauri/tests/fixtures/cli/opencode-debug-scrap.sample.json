@@ -1,0 +1,15 @@
+[
+  {
+    "id": "project-fixture",
+    "worktree": "C:\\workspace\\fixture-project",
+    "vcs": "git",
+    "icon": {
+      "color": "mint"
+    },
+    "time": {
+      "created": 1700000000000,
+      "updated": 1700000001000
+    },
+    "sandboxes": []
+  }
+]

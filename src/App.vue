@@ -28,12 +28,30 @@
         </button>
         <button
           class="title-bar__tab"
-          :class="{ active: mainTab === 'project' }"
+          :class="{ active: mainTab === 'claude' }"
           :disabled="!appReady"
           data-tauri-drag-region="false"
-          @click="openProjectTab"
+          @click="openClaudeTab"
         >
-          项目
+          {{ CLI_DESCRIPTORS.claude.label }}
+        </button>
+        <button
+          class="title-bar__tab"
+          :class="{ active: mainTab === 'codex' }"
+          :disabled="!appReady"
+          data-tauri-drag-region="false"
+          @click="openCodexTab"
+        >
+          {{ CLI_DESCRIPTORS.codex.label }}
+        </button>
+        <button
+          class="title-bar__tab"
+          :class="{ active: mainTab === 'opencode' }"
+          :disabled="!appReady"
+          data-tauri-drag-region="false"
+          @click="openOpencodeTab"
+        >
+          {{ CLI_DESCRIPTORS.opencode.label }}
         </button>
       </nav>
 
@@ -76,7 +94,7 @@
     <main v-if="appReady" class="app-content">
       <!-- Config panels -->
       <div v-show="mainTab === 'config'" class="app-panel">
-        <ClaudePanel :sidebar-collapsed="configSidebarCollapsed" />
+        <ConfigWorkspace :sidebar-collapsed="configSidebarCollapsed" />
       </div>
 
       <!-- Terminal panel — always mounted to preserve state -->
@@ -84,9 +102,16 @@
         <TerminalManager ref="terminalManagerRef" :launch-dir="activeLaunchDir" />
       </div>
 
-      <!-- Project panel -->
-      <div v-if="projectPanelActivated" v-show="mainTab === 'project'" class="app-panel">
-        <ProjectPanel @open-settings="showSettings = !showSettings" />
+      <!-- Shared CLI workspace -->
+      <div
+        v-if="activeCliKind && activeCliStatus?.state === 'ready'"
+        v-show="activeCliKind === mainTab"
+        class="app-panel"
+      >
+        <ProjectPanel
+          :cli-kind="activeCliKind"
+          @open-settings="showSettings = !showSettings"
+        />
       </div>
 
       <!-- Orchestration panel -->
@@ -157,47 +182,50 @@
     </div>
 
     <div
-      v-if="projectClaudeGateVisible"
+      v-if="cliGateVisible"
       class="dependency-gate project-claude-gate"
       role="alert"
       aria-live="polite"
     >
       <section class="dependency-gate__card">
         <div class="dependency-gate__icon" aria-hidden="true">
-          {{ projectClaudeChecking ? '⏳' : '✦' }}
+          {{ cliGateChecking ? '⏳' : '✦' }}
         </div>
-        <h1>{{ projectClaudeChecking ? '正在检查 Claude Code' : '未检测到 Claude Code' }}</h1>
+        <h1>{{ cliGateTitle }}</h1>
         <p class="dependency-gate__description">
-          {{ projectClaudeChecking ? '项目功能正在确认 Claude Code 是否可用。' : projectClaudeMessage }}
+          {{ cliGateDescription }}
         </p>
-        <p v-if="projectClaudeVersion" class="dependency-gate__detail">当前版本：{{ projectClaudeVersion }}</p>
+        <p v-if="activeCliStatus?.version" class="dependency-gate__detail">
+          当前版本：{{ activeCliStatus.version }}
+        </p>
+        <p v-if="activeCliStatus?.executablePath" class="dependency-gate__detail">
+          可执行文件：{{ activeCliStatus.executablePath }}
+        </p>
 
-        <div v-if="projectClaudeChecking" class="dependency-gate__progress">
+        <div v-if="cliGateChecking" class="dependency-gate__progress">
           <span class="dependency-gate__spinner" aria-hidden="true"></span>
-          正在检查 Claude Code。
+          {{ cliGateProgressText }}
         </div>
 
         <div v-else class="dependency-gate__actions">
-          <button class="dependency-gate__button dependency-gate__button--primary" @click="openClaudeCodeInstallGuide">
-            打开安装说明
+          <button class="dependency-gate__button dependency-gate__button--primary" @click="cliInstallHelpVisible = !cliInstallHelpVisible">
+            安装说明
           </button>
           <button
             class="dependency-gate__button dependency-gate__button--secondary"
-          :disabled="projectClaudeInstalling"
-          @click="projectClaudeInstallCompleted ? retryProjectClaudeCheck() : installClaudeCode()"
+            @click="retryCliGateCheck"
           >
-            <span v-if="projectClaudeInstalling">
-              正在安装<span class="installing-dots" aria-label="安装中"><span>.</span><span>.</span><span>.</span></span>
-            </span>
-            <span v-else-if="projectClaudeInstallCompleted">重新检测</span>
-            <span v-else>一键安装</span>
+            重新检测
           </button>
           <button class="dependency-gate__button dependency-gate__button--link" @click="openConfigTab">
             返回配置
           </button>
         </div>
-        <p v-if="!projectClaudeChecking" class="dependency-gate__hint">
-          安装完成后点击“重新检测”再进入项目页。
+        <p v-if="cliInstallHelpVisible" class="dependency-gate__hint">
+          {{ cliInstallHint }}
+        </p>
+        <p v-else-if="!cliGateChecking" class="dependency-gate__hint">
+          完成安装或权限修复后，点击“重新检测”。只会重新检查 {{ activeCliLabel }}。
         </p>
       </section>
     </div>
@@ -277,12 +305,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-shell'
-import ClaudePanel from './components/claude/ClaudePanel.vue'
+import ConfigWorkspace from './components/config/ConfigWorkspace.vue'
 import TerminalManager from './components/terminal/TerminalManager.vue'
 import ProjectPanel from './components/project/ProjectPanel.vue'
 import OrchestrationManager from './components/orchestration/OrchestrationManager.vue'
@@ -290,8 +318,16 @@ import StatusBar from './components/common/StatusBar.vue'
 import { useClaudeStore } from './stores/claude'
 import { useTerminalStore } from './stores/terminal'
 import { useProjectStore } from './stores/project'
+import { useCliRuntimeStore } from './stores/cliRuntime'
+import { useConfigWorkspaceStore } from './stores/configWorkspace'
+import {
+  CLI_DESCRIPTORS,
+  isCliKind,
+  normalizePersistedMainTab,
+  type CliKind,
+  type MainTab,
+} from './types/cli'
 
-type MainTab = 'config' | 'terminal' | 'project' | 'orchestration'
 type DependencyName = 'node' | 'git'
 type DependencyStatus = 'installed' | 'missing' | 'unsupported' | 'error'
 type DependencyGateState = 'checking' | 'missing' | 'unsupported' | 'error' | 'installing' | 'restart_required' | 'ready'
@@ -310,28 +346,59 @@ interface DependencyInstallResult {
   message: string
 }
 
-type ProjectClaudeGateState = 'idle' | 'checking' | 'missing' | 'ready'
-
 const mainTab = ref<MainTab>('config')
+const claudeStore = useClaudeStore()
+const terminalStore = useTerminalStore()
+const projectStore = useProjectStore()
+const cliRuntimeStore = useCliRuntimeStore()
+const configWorkspaceStore = useConfigWorkspaceStore()
 const terminalManagerRef = ref<InstanceType<typeof TerminalManager> | null>(null)
 const configSidebarCollapsed = ref(false)
 const dependencyState = ref<DependencyGateState>('checking')
 const dependencyResult = ref<DependencyCheckResult | null>(null)
 const dependencyActionMessage = ref('')
-const projectClaudeGateState = ref<ProjectClaudeGateState>('idle')
-const projectClaudeMessage = ref('未检测到 Claude Code。请先完成安装后再进入项目页。')
-const projectClaudeVersion = ref<string | null>(null)
-const projectPanelActivated = ref(false)
-const projectClaudeInstalling = ref(false)
-const projectClaudeInstallCompleted = ref(false)
+const cliInstallHelpVisible = ref(false)
+const cliWorkspacePreparation = ref<{ kind: CliKind; requestId: number } | null>(null)
 let readyAppInitialized = false
+let cliOpenRequestId = 0
+const MIN_CLI_WORKSPACE_GATE_MS = 320
 
 const appReady = computed(() => dependencyState.value === 'ready')
-const projectClaudeGateVisible = computed(() => {
-  return appReady.value && mainTab.value === 'project' && projectClaudeGateState.value !== 'ready'
+const activeCliKind = computed<CliKind | null>(() => isCliKind(mainTab.value) ? mainTab.value : null)
+const activeCliStatus = computed(() => activeCliKind.value
+  ? cliRuntimeStore.statuses[activeCliKind.value]
+  : null)
+const activeCliLabel = computed(() => activeCliKind.value
+  ? CLI_DESCRIPTORS[activeCliKind.value].label
+  : '')
+const cliWorkspacePreparing = computed(() => !!activeCliKind.value
+  && cliWorkspacePreparation.value?.kind === activeCliKind.value)
+const cliGateVisible = computed(() => appReady.value
+  && !!activeCliKind.value
+  && (cliWorkspacePreparing.value || activeCliStatus.value?.state !== 'ready'))
+const cliGateChecking = computed(() => cliWorkspacePreparing.value
+  || !activeCliStatus.value
+  || activeCliStatus.value.state === 'checking')
+const cliGateTitle = computed(() => {
+  if (!activeCliStatus.value || activeCliStatus.value.state === 'checking') {
+    return `正在检查 ${activeCliLabel.value}`
+  }
+  if (cliWorkspacePreparing.value) return `正在整理 ${activeCliLabel.value} 工作区`
+  if (activeCliStatus.value?.issueCode === 'executable_missing') return `未检测到 ${activeCliLabel.value}`
+  return `${activeCliLabel.value} 暂不可用`
 })
-const projectClaudeChecking = computed(() => {
-  return projectClaudeGateState.value === 'idle' || projectClaudeGateState.value === 'checking'
+const cliGateDescription = computed(() => cliWorkspacePreparing.value
+  && activeCliStatus.value?.state === 'ready'
+  ? '正在同步项目和历史会话，并完成项目列表排序。'
+  : activeCliStatus.value?.message ?? '')
+const cliGateProgressText = computed(() => cliWorkspacePreparing.value
+  && activeCliStatus.value?.state === 'ready'
+  ? `正在整理 ${activeCliLabel.value} 的项目与会话。`
+  : `正在检查 ${activeCliLabel.value}。`)
+const cliInstallHint = computed(() => {
+  if (activeCliKind.value === 'claude') return 'npm 安装命令：npm install -g @anthropic-ai/claude-code'
+  if (activeCliKind.value === 'codex') return 'npm 安装命令：npm install -g @openai/codex'
+  return 'npm 安装命令：npm install -g opencode-ai'
 })
 const activeDependencyName = computed(() => dependencyResult.value?.dependency === 'git' ? 'Git' : 'Node.js')
 const canInstallDependency = computed(() => {
@@ -361,14 +428,14 @@ const dependencyGateMessage = computed(() => {
 })
 
 const leftSidebarToggleTitle = computed(() => {
-  if (mainTab.value === 'project') return '折叠/展开项目边栏'
+  if (isCliKind(mainTab.value)) return '折叠/展开项目边栏'
   if (mainTab.value === 'config') return '折叠/展开配置边栏'
   return '折叠/展开左侧边栏'
 })
 
 function toggleActiveLeftSidebar() {
   if (!appReady.value) return
-  if (mainTab.value === 'project') {
+  if (isCliKind(mainTab.value)) {
     projectStore.toggleLeftSidebarCollapsed()
     return
   }
@@ -563,64 +630,66 @@ function onDocumentClick(e: MouseEvent) {
   }
 }
 
-const claudeStore = useClaudeStore()
-const terminalStore = useTerminalStore()
-const projectStore = useProjectStore()
-
-async function openProjectTab() {
-  if (!appReady.value || projectClaudeGateState.value === 'checking') return
-  if (projectClaudeGateState.value === 'ready') {
-    mainTab.value = 'project'
+async function openCliTab(kind: CliKind, forceCheck = false) {
+  if (!appReady.value || cliRuntimeStore.checking[kind]) return
+  if (mainTab.value === 'config'
+    && !(await configWorkspaceStore.confirmDiscardActiveChanges(`进入 ${CLI_DESCRIPTORS[kind].label} 工作区`))) {
     return
   }
+  const requestId = ++cliOpenRequestId
+  const gateStartedAt = performance.now()
+  mainTab.value = kind
+  projectStore.setActiveCliKind(kind)
+  cliInstallHelpVisible.value = false
+  cliWorkspacePreparation.value = { kind, requestId }
+  let workspaceReady = false
 
-  projectClaudeGateState.value = 'checking'
-  projectClaudeMessage.value = ''
-  projectClaudeVersion.value = null
-  projectClaudeInstallCompleted.value = false
-  mainTab.value = 'project'
-
-  const result = await claudeStore.checkClaudeCode()
-  projectClaudeVersion.value = result.version
-  if (result.installed) {
-    projectPanelActivated.value = true
-    projectClaudeGateState.value = 'ready'
-    return
-  }
-
-  projectClaudeMessage.value = result.message
-  projectClaudeGateState.value = 'missing'
-}
-
-async function retryProjectClaudeCheck() {
-  if (projectClaudeInstalling.value) return
-  projectClaudeGateState.value = 'idle'
-  await openProjectTab()
-}
-
-async function installClaudeCode() {
-  if (projectClaudeInstalling.value || projectClaudeInstallCompleted.value) return
-
-  projectClaudeInstalling.value = true
-  projectClaudeMessage.value = '正在通过 npm 安装 Claude Code，请稍候。'
   try {
-    const result = await invoke<{ message: string }>('install_claude_code_via_npm')
-    projectClaudeMessage.value = result.message
-    projectClaudeInstallCompleted.value = true
-  } catch (error) {
-    projectClaudeMessage.value = `安装失败：${String(error)}`
+    const status = await cliRuntimeStore.check(kind, forceCheck)
+    if (requestId !== cliOpenRequestId || mainTab.value !== kind) return
+    if (status.state !== 'ready') return
+
+    await projectStore.prepareCliWorkspace(kind)
+    if (requestId !== cliOpenRequestId || mainTab.value !== kind) return
+
+    // Project/session discovery mutates the list several times. Keep it covered
+    // until Vue has rendered the final computed ordering behind the gate.
+    await nextTick()
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    if (requestId !== cliOpenRequestId || mainTab.value !== kind) return
+
+    const remainingGateTime = MIN_CLI_WORKSPACE_GATE_MS - (performance.now() - gateStartedAt)
+    if (remainingGateTime > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, remainingGateTime))
+    }
+    if (requestId !== cliOpenRequestId || mainTab.value !== kind) return
+    workspaceReady = true
   } finally {
-    projectClaudeInstalling.value = false
+    if (cliWorkspacePreparation.value?.requestId === requestId) {
+      cliWorkspacePreparation.value = null
+      if (workspaceReady) {
+        await nextTick()
+        terminalStore.triggerRefit()
+      }
+    }
   }
 }
 
-async function openClaudeCodeInstallGuide() {
-  try {
-    await open('https://docs.anthropic.com/en/docs/claude-code/getting-started')
-    projectClaudeMessage.value = '已在默认浏览器中打开 Claude Code 安装说明。'
-  } catch (error) {
-    projectClaudeMessage.value = `无法打开安装说明：${String(error)}`
-  }
+async function openClaudeTab() {
+  await openCliTab('claude')
+}
+
+async function openCodexTab() {
+  await openCliTab('codex')
+}
+
+async function openOpencodeTab() {
+  await openCliTab('opencode')
+}
+
+async function retryCliGateCheck() {
+  if (!activeCliKind.value) return
+  await openCliTab(activeCliKind.value, true)
 }
 
 const activeLaunchDir = computed(() => claudeStore.launchDir)
@@ -645,24 +714,23 @@ async function refreshClaudeHistory() {
 }
 
 // Switch to terminal view when the Claude store requests it
-watch(() => claudeStore.switchToTerminal, (val) => {
+watch(() => claudeStore.switchToTerminal, async (val) => {
   if (val && appReady.value) {
+    if (mainTab.value === 'config'
+      && !(await configWorkspaceStore.confirmDiscardActiveChanges('进入终端'))) {
+      claudeStore.switchToTerminal = false
+      return
+    }
     mainTab.value = 'terminal'
     claudeStore.switchToTerminal = false
   }
 })
 
-// Built-in Claude launches from the config panel now live inside Project.
+// Built-in Claude launches from the config panel now live inside Claude Code.
 watch(() => claudeStore.switchToProject, async (val) => {
   if (val && appReady.value) {
     claudeStore.switchToProject = false
-    if (claudeStore.claudeExePath) {
-      projectPanelActivated.value = true
-      projectClaudeGateState.value = 'ready'
-      mainTab.value = 'project'
-      return
-    }
-    await openProjectTab()
+    await openClaudeTab()
   }
 })
 
@@ -674,7 +742,8 @@ watch(mainTab, (tab) => {
   if (tab === 'terminal') {
     terminalStore.triggerRefit()
   }
-  if (tab === 'project') {
+  if (isCliKind(tab)) {
+    projectStore.setActiveCliKind(tab)
     terminalStore.triggerRefit()
   }
   invoke('save_last_active_main_tab', { tab }).catch(() => {})
@@ -690,9 +759,9 @@ const statusItems = computed(() => {
       { label: '标签页', value: String(terminalStore.terminalTabs.length) },
     ]
   }
-  if (mainTab.value === 'project') {
+  if (activeCliKind.value) {
     return [
-      { label: '模式', value: '项目' },
+      { label: '模式', value: CLI_DESCRIPTORS[activeCliKind.value].label },
       { label: '项目', value: projectStore.activeProject?.name ?? '未选择' },
       { label: '会话', value: projectStore.activeSession?.name ?? '未选择' },
     ]
@@ -704,7 +773,7 @@ const statusItems = computed(() => {
     ]
   }
   return [
-    { label: '工具', value: 'Claude Code' },
+    { label: '工具', value: CLI_DESCRIPTORS.claude.label },
     ...(claudeStore.claudeExePath
       ? [{ label: '路径', value: claudeStore.claudeExePath }]
       : [{ label: '状态', value: '未安装' }]),
@@ -760,8 +829,9 @@ async function saveWindowState() {
 
 async function loadLastMainTab() {
   try {
-    const tab = await invoke<MainTab>('load_last_active_main_tab')
-    if (tab === 'project' || tab === 'config') {
+    const savedTab = await invoke<string>('load_last_active_main_tab')
+    const tab = normalizePersistedMainTab(savedTab)
+    if (tab === 'claude' || tab === 'codex' || tab === 'opencode' || tab === 'config') {
       mainTab.value = tab
     } else if (tab === 'terminal' || tab === 'orchestration') {
       mainTab.value = 'config'
@@ -784,7 +854,8 @@ function onKeyDown(e: KeyboardEvent) {
   if (!appReady.value) return
   if (!e.ctrlKey) return
 
-  if (mainTab.value === 'project') {
+  if (isCliKind(mainTab.value)) {
+    if (activeCliStatus.value?.state !== 'ready') return
     if (e.key === 't' || e.key === 'T') {
       e.preventDefault()
       projectStore.createSession()
@@ -853,8 +924,8 @@ async function initializeReadyApp() {
     // status bar can omit the directory when the app-data location is unavailable
   }
 
-  if (mainTab.value === 'project') {
-    await openProjectTab()
+  if (isCliKind(mainTab.value)) {
+    await openCliTab(mainTab.value)
   }
 }
 
@@ -884,6 +955,10 @@ onMounted(async () => {
   // we must call win.close() ourselves after finishing async work.
   win.onCloseRequested(async (event) => {
     event.preventDefault()
+    if (mainTab.value === 'config'
+      && !(await configWorkspaceStore.confirmDiscardActiveChanges('关闭应用'))) {
+      return
+    }
     try {
       await invoke('save_last_active_main_tab', { tab: mainTab.value })
       await saveWindowState()

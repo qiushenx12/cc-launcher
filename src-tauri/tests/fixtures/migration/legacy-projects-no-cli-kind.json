@@ -1,0 +1,32 @@
+{
+  "projects": [
+    {
+      "id": "project-1",
+      "name": "fixture-project",
+      "path": "C:\\workspace\\fixture-project",
+      "createdAt": 1700000000000,
+      "updatedAt": 1700000000000,
+      "order": 0,
+      "recentItems": [],
+      "futureProjectField": "preserve-me"
+    }
+  ],
+  "sessions": [
+    {
+      "id": "session-1",
+      "projectId": "project-1",
+      "name": "fixture-session",
+      "claudeSessionId": "claude-session-1",
+      "createdAt": 1700000000000,
+      "updatedAt": 1700000000000,
+      "order": 0,
+      "futureSessionField": "preserve-me"
+    }
+  ],
+  "activeProjectId": "project-1",
+  "activeSessionId": "session-1",
+  "expandedProjectIds": [
+    "project-1"
+  ],
+  "futureRootField": "preserve-me"
+}

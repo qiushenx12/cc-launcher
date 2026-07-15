@@ -43,7 +43,7 @@ pub async fn install_claude_code_via_npm() -> Result<ClaudeCodeInstallResult, St
         .map_err(|error| format!("Claude Code 安装任务异常结束: {error}"))?
 }
 
-fn locate_claude_executable() -> Option<String> {
+pub(crate) fn locate_claude_executable() -> Option<String> {
     // Try PATH first
     if let Ok(path) = which::which("claude") {
         return Some(path.to_string_lossy().to_string());

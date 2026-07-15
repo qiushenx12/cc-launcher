@@ -26,9 +26,7 @@ struct ClaudeHistoryChangedPayload {
 fn is_history_change(kind: &notify::EventKind) -> bool {
     matches!(
         kind,
-        notify::EventKind::Create(_)
-            | notify::EventKind::Modify(_)
-            | notify::EventKind::Remove(_)
+        notify::EventKind::Create(_) | notify::EventKind::Modify(_) | notify::EventKind::Remove(_)
     )
 }
 
@@ -48,8 +46,8 @@ pub fn start_history_watcher(app: AppHandle) {
 
         let event_history = history.clone();
         let event_app = app.clone();
-        let mut watcher = match notify::recommended_watcher(
-            move |result: notify::Result<notify::Event>| {
+        let mut watcher =
+            match notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
                 let Ok(event) = result else {
                     return;
                 };
@@ -60,7 +58,10 @@ pub fn start_history_watcher(app: AppHandle) {
 
                 let matches_history = event.paths.iter().any(|path| {
                     path == &event_history
-                        || path.file_name().map(|name| name == history_name).unwrap_or(false)
+                        || path
+                            .file_name()
+                            .map(|name| name == history_name)
+                            .unwrap_or(false)
                 });
 
                 if matches_history {
@@ -71,13 +72,18 @@ pub fn start_history_watcher(app: AppHandle) {
                         },
                     );
                 }
-            },
-        ) {
-            Ok(watcher) => watcher,
-            Err(_) => return,
-        };
+            }) {
+                Ok(watcher) => watcher,
+                Err(_) => return,
+            };
 
-        if notify::Watcher::watch(&mut watcher, &history_dir, notify::RecursiveMode::NonRecursive).is_err() {
+        if notify::Watcher::watch(
+            &mut watcher,
+            &history_dir,
+            notify::RecursiveMode::NonRecursive,
+        )
+        .is_err()
+        {
             return;
         }
 

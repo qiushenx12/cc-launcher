@@ -36,7 +36,7 @@
     </div>
 
     <!-- ANTHROPIC_AUTH_TOKEN -->
-    <TokenField
+    <SecretField
       label="认证令牌"
       v-model="vars.ANTHROPIC_AUTH_TOKEN"
     />
@@ -128,7 +128,9 @@
 
     <!-- Action buttons -->
     <div class="action-row">
-      <button class="btn btn-primary" @click="store.saveConfig()">保存配置</button>
+      <button class="btn btn-primary" :disabled="!store.isConfigDirty" @click="store.saveConfig()">
+        {{ store.isConfigDirty ? '保存配置' : '已保存' }}
+      </button>
       <button class="btn btn-primary" @click="store.applyToRegistry()">应用到环境变量</button>
     </div>
     <div class="action-row action-row--tools">
@@ -138,7 +140,18 @@
     </div>
 
     <!-- Status hint -->
-    <div v-if="store.statusMessage" class="status-hint">{{ store.statusMessage }}</div>
+    <ConfigStatusBanner
+      v-if="store.statusMessage"
+      :message="store.statusMessage"
+      :tone="statusTone"
+    />
+
+    <div class="preflight-entry">
+      <button class="btn btn-secondary" type="button" @click="workspaceStore.openPreflight()">
+        启动前检测
+      </button>
+      <span>检查 CLI、配置来源与当前启动上下文，诊断内容会自动脱敏。</span>
+    </div>
   </div>
 </template>
 
@@ -146,15 +159,23 @@
 import { computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useClaudeStore } from '@/stores/claude'
-import TokenField from './TokenField.vue'
-import ModelField from './ModelField.vue'
+import { useConfigWorkspaceStore } from '@/stores/configWorkspace'
+import SecretField from '@/components/config/SecretField.vue'
+import ConfigStatusBanner from '@/components/config/ConfigStatusBanner.vue'
+import ModelField from '@/components/config/ModelField.vue'
 
 const store = useClaudeStore()
+const workspaceStore = useConfigWorkspaceStore()
 
 // Convenience proxy so templates can use vars.ANTHROPIC_MODEL etc.
 const vars = computed(() => store.editingConfig.vars)
 
 const effortOptions = ['low', 'medium', 'high', 'xhigh', 'max', 'auto']
+const statusTone = computed<'info' | 'success' | 'warning' | 'error'>(() => {
+  if (/失败|错误|无效|损坏|不存在/.test(store.statusMessage)) return 'error'
+  if (/已保存|已应用|已获取|已启动/.test(store.statusMessage)) return 'success'
+  return 'info'
+})
 
 function onEffortSelect(event: Event) {
   const val = (event.target as HTMLSelectElement).value
@@ -276,9 +297,19 @@ async function openClaudePath() {
   flex-wrap: wrap;
 }
 
-.status-hint {
-  margin-top: 6px;
-  font-size: var(--font-size-small);
-  color: var(--text-secondary);
+.preflight-entry {
+  margin-top: 10px;
+  padding-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid var(--separator);
 }
+
+.preflight-entry span {
+  color: var(--text-secondary);
+  font-size: var(--font-size-small);
+  line-height: 1.45;
+}
+
 </style>

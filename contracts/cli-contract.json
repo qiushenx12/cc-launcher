@@ -1,0 +1,98 @@
+{
+  "contractVersion": 1,
+  "serializedCliKindField": "cliKind",
+  "legacyDefaultCliKind": "claude",
+  "mainTab": {
+    "values": [
+      "config",
+      "claude",
+      "codex",
+      "opencode",
+      "terminal",
+      "orchestration"
+    ],
+    "legacyAliases": {
+      "project": "claude"
+    },
+    "unknownFallback": "config"
+  },
+  "cliDescriptors": [
+    {
+      "kind": "claude",
+      "label": "Claude Code",
+      "command": "claude",
+      "configFormat": "json",
+      "supportsManagedProfile": true
+    },
+    {
+      "kind": "codex",
+      "label": "CodeX",
+      "command": "codex",
+      "configFormat": "toml",
+      "supportsManagedProfile": true
+    },
+    {
+      "kind": "opencode",
+      "label": "OpenCode",
+      "command": "opencode",
+      "configFormat": "jsonc",
+      "supportsManagedProfile": true
+    }
+  ],
+  "issueDefinitions": [
+    {
+      "code": "executable_missing",
+      "state": "blocked",
+      "messages": {
+        "claude": "未检测到 Claude Code。请先安装 Claude Code，再重新检测。",
+        "codex": "未检测到 CodeX。请先安装 Codex CLI，再重新检测。",
+        "opencode": "未检测到 OpenCode。请先安装 OpenCode，再重新检测。"
+      }
+    },
+    {
+      "code": "version_command_failed",
+      "state": "blocked",
+      "messages": {
+        "claude": "已找到 Claude Code，但版本命令执行失败。请检查可执行文件权限和 PATH。",
+        "codex": "已找到 CodeX，但版本命令执行失败。请检查可执行文件权限和 PATH。",
+        "opencode": "已找到 OpenCode，但版本命令执行失败。请检查可执行文件权限和 PATH。"
+      }
+    },
+    {
+      "code": "version_too_old",
+      "state": "blocked",
+      "messages": {
+        "claude": "当前 Claude Code 版本低于此功能要求。请手动升级后重新检测。",
+        "codex": "当前 CodeX 版本低于此功能要求。请手动升级 Codex CLI 后重新检测。",
+        "opencode": "当前 OpenCode 版本低于此功能要求。请手动升级后重新检测。"
+      }
+    },
+    {
+      "code": "config_parse_failed",
+      "state": "blocked",
+      "messages": {
+        "claude": "Claude Code 的 JSON 配置无法解析。原文件未修改，请修复配置或恢复备份后重试。",
+        "codex": "CodeX 的 TOML 或认证 JSON 无法解析。原文件未修改，请修复配置或恢复备份后重试。",
+        "opencode": "OpenCode 的 JSON/JSONC 配置无法解析。原文件未修改，请修复配置或恢复备份后重试。"
+      }
+    },
+    {
+      "code": "authentication_missing",
+      "state": "blocked",
+      "messages": {
+        "claude": "Claude Code 尚未配置可用的 Token 或 API Key。请完成认证后重试。",
+        "codex": "CodeX 尚未完成 ChatGPT 登录，也没有可用的自定义提供商 API Key。请完成认证后重试。",
+        "opencode": "OpenCode 尚未完成提供商登录，也没有可用的受管 API Key。请完成认证后重试。"
+      }
+    },
+    {
+      "code": "provider_unreachable",
+      "state": "degraded",
+      "messages": {
+        "claude": "无法连接 Claude Code 当前模型提供商。已保存配置保持不变，请检查网络、端点和凭据。",
+        "codex": "无法连接 CodeX 当前模型提供商。已保存配置保持不变，请检查网络、端点和凭据。",
+        "opencode": "无法连接 OpenCode 当前模型提供商。已保存配置保持不变，请检查网络、端点和凭据。"
+      }
+    }
+  ]
+}

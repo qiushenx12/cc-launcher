@@ -2,10 +2,15 @@
 //!
 //! Manages all UI state in a single file: %APPDATA%\ClaudeEnvManager\app_state.json
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+use crate::cli_migration::normalize_main_tab;
+use crate::file_transaction::{restore_json_backup_if_missing, write_json_atomic};
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -31,6 +36,8 @@ pub struct WindowState {
     pub height: Option<f64>,
     pub x: Option<f64>,
     pub y: Option<f64>,
+    #[serde(default, flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -47,6 +54,20 @@ pub struct ToolState {
     pub pane_width: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_sizes: Option<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_profile_id: Option<String>,
+    #[serde(default)]
+    pub profile_ids: BTreeMap<String, String>,
+    #[serde(default, flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileIndexState {
+    pub order: Vec<String>,
+    pub profile_ids: BTreeMap<String, String>,
+    pub active_profile_id: Option<String>,
 }
 
 fn default_pane_width() -> f64 {
@@ -70,6 +91,9 @@ impl Default for ToolState {
             project_drop_path_mode: default_drop_path_mode(),
             pane_width: default_pane_width(),
             pane_sizes: None,
+            active_profile_id: None,
+            profile_ids: BTreeMap::new(),
+            extra: Map::new(),
         }
     }
 }
@@ -78,11 +102,16 @@ impl Default for ToolState {
 pub struct TerminalState {
     #[serde(default = "default_font_size")]
     pub font_size: f64,
+    #[serde(default, flatten)]
+    pub extra: Map<String, Value>,
 }
 
 impl Default for TerminalState {
     fn default() -> Self {
-        Self { font_size: default_font_size() }
+        Self {
+            font_size: default_font_size(),
+            extra: Map::new(),
+        }
     }
 }
 
@@ -93,9 +122,15 @@ pub struct AppState {
     #[serde(default)]
     pub claude: ToolState,
     #[serde(default)]
+    pub codex: ToolState,
+    #[serde(default)]
+    pub opencode: ToolState,
+    #[serde(default)]
     pub terminal: TerminalState,
     #[serde(default = "default_last_active_main_tab")]
     pub last_active_main_tab: String,
+    #[serde(default, flatten)]
+    pub extra: Map<String, Value>,
 }
 
 fn default_last_active_main_tab() -> String {
@@ -106,34 +141,34 @@ fn default_last_active_main_tab() -> String {
 // Core read/write
 // ---------------------------------------------------------------------------
 
-fn load_state() -> AppState {
-    let path = match app_state_path() {
-        Ok(p) => p,
-        Err(_) => return AppState::default(),
-    };
+fn load_state() -> Result<AppState, String> {
+    let path = app_state_path()?;
+    restore_json_backup_if_missing(&path, "应用状态")?;
     let raw = match fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(_) => return migrate_legacy().unwrap_or_default(),
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(migrate_legacy().unwrap_or_default());
+        }
+        Err(error) => return Err(format!("Failed to read state file: {error}")),
     };
-    serde_json::from_str(&raw).unwrap_or_default()
+    serde_json::from_str(&raw).map_err(|error| {
+        format!("Failed to parse app_state.json; the file was not changed: {error}")
+    })
 }
 
 fn save_state(state: &AppState) -> Result<(), String> {
     let path = app_state_path()?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create state directory: {e}"))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create state directory: {e}"))?;
     }
     let json = serde_json::to_string_pretty(state)
         .map_err(|e| format!("Failed to serialise state: {e}"))?;
-    fs::write(&path, json.as_bytes())
-        .map_err(|e| format!("Failed to write state file: {e}"))?;
-    Ok(())
+    write_json_atomic(&path, json.as_bytes(), "应用状态")
 }
 
 /// Read-modify-write helper
 fn update_state<F: FnOnce(&mut AppState)>(f: F) -> Result<(), String> {
-    let mut state = load_state();
+    let mut state = load_state()?;
     f(&mut state);
     save_state(&state)
 }
@@ -203,6 +238,7 @@ fn migrate_legacy() -> Option<AppState> {
             height: w.height,
             x: w.x,
             y: w.y,
+            extra: Map::new(),
         };
     }
 
@@ -236,12 +272,49 @@ fn migrate_legacy() -> Option<AppState> {
 // Key → tool field mapping
 // ---------------------------------------------------------------------------
 
-fn tool_state_mut<'a>(state: &'a mut AppState, _key: &str) -> &'a mut ToolState {
-    &mut state.claude
+fn tool_state_mut<'a>(state: &'a mut AppState, key: &str) -> Result<&'a mut ToolState, String> {
+    match key {
+        "claude" | "claude-panel" => Ok(&mut state.claude),
+        "codex" | "codex-panel" => Ok(&mut state.codex),
+        "opencode" | "opencode-panel" => Ok(&mut state.opencode),
+        _ => Err(format!("Unknown CLI state key: {key}")),
+    }
 }
 
-fn tool_state_ref<'a>(state: &'a AppState, _key: &str) -> &'a ToolState {
-    &state.claude
+fn tool_state_ref<'a>(state: &'a AppState, key: &str) -> Result<&'a ToolState, String> {
+    match key {
+        "claude" | "claude-panel" => Ok(&state.claude),
+        "codex" | "codex-panel" => Ok(&state.codex),
+        "opencode" | "opencode-panel" => Ok(&state.opencode),
+        _ => Err(format!("Unknown CLI state key: {key}")),
+    }
+}
+
+fn update_tool_state<F: FnOnce(&mut ToolState)>(key: &str, update: F) -> Result<(), String> {
+    let mut state = load_state()?;
+    update(tool_state_mut(&mut state, key)?);
+    save_state(&state)
+}
+
+pub(crate) fn load_profile_index_state(key: &str) -> Result<ProfileIndexState, String> {
+    let state = load_state()?;
+    let tool = tool_state_ref(&state, key)?;
+    Ok(ProfileIndexState {
+        order: tool.config_order.clone(),
+        profile_ids: tool.profile_ids.clone(),
+        active_profile_id: tool.active_profile_id.clone(),
+    })
+}
+
+pub(crate) fn save_profile_index_state(
+    key: &str,
+    profile_index: &ProfileIndexState,
+) -> Result<(), String> {
+    update_tool_state(key, |tool| {
+        tool.config_order = profile_index.order.clone();
+        tool.profile_ids = profile_index.profile_ids.clone();
+        tool.active_profile_id = profile_index.active_profile_id.clone();
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -250,7 +323,7 @@ fn tool_state_ref<'a>(state: &'a AppState, _key: &str) -> &'a ToolState {
 
 #[tauri::command]
 pub fn load_window_state() -> Result<WindowState, String> {
-    let state = load_state().window;
+    let state = load_state()?.window;
     // Guard against corrupted state (zero size or way off-screen).
     let invalid = state.width.map_or(false, |v| v <= 50.0)
         || state.height.map_or(false, |v| v <= 50.0)
@@ -263,7 +336,7 @@ pub fn load_window_state() -> Result<WindowState, String> {
 }
 
 #[tauri::command]
-pub fn save_window_state(state: WindowState) -> Result<(), String> {
+pub fn save_window_state(mut state: WindowState) -> Result<(), String> {
     // Don't persist zero-size or wildly off-screen positions.
     let invalid = state.width.map_or(false, |v| v <= 0.0)
         || state.height.map_or(false, |v| v <= 0.0)
@@ -272,7 +345,12 @@ pub fn save_window_state(state: WindowState) -> Result<(), String> {
     if invalid {
         return Ok(());
     }
-    update_state(|s| s.window = state)
+    update_state(|current| {
+        for (key, value) in std::mem::take(&mut current.window.extra) {
+            state.extra.entry(key).or_insert(value);
+        }
+        current.window = state;
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -280,13 +358,14 @@ pub fn save_window_state(state: WindowState) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn load_launch_dir() -> Result<String, String> {
-    Ok(load_state().claude.launch_dir)
+pub fn load_launch_dir(key: String) -> Result<String, String> {
+    let state = load_state()?;
+    Ok(tool_state_ref(&state, &key)?.launch_dir.clone())
 }
 
 #[tauri::command]
-pub fn save_launch_dir(dir: String) -> Result<(), String> {
-    update_state(|s| s.claude.launch_dir = dir)
+pub fn save_launch_dir(key: String, dir: String) -> Result<(), String> {
+    update_tool_state(&key, |tool| tool.launch_dir = dir)
 }
 
 // ---------------------------------------------------------------------------
@@ -295,12 +374,13 @@ pub fn save_launch_dir(dir: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn load_pane_width(key: String) -> Result<f64, String> {
-    Ok(tool_state_ref(&load_state(), &key).pane_width)
+    let state = load_state()?;
+    Ok(tool_state_ref(&state, &key)?.pane_width)
 }
 
 #[tauri::command]
 pub fn save_pane_width(key: String, width: f64) -> Result<(), String> {
-    update_state(|s| tool_state_mut(s, &key).pane_width = width)
+    update_tool_state(&key, |tool| tool.pane_width = width)
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +389,7 @@ pub fn save_pane_width(key: String, width: f64) -> Result<(), String> {
 
 #[tauri::command]
 pub fn load_terminal_font_size() -> Result<f64, String> {
-    Ok(load_state().terminal.font_size)
+    Ok(load_state()?.terminal.font_size)
 }
 
 #[tauri::command]
@@ -323,12 +403,51 @@ pub fn save_terminal_font_size(font_size: f64) -> Result<(), String> {
 
 #[tauri::command]
 pub fn load_config_order(key: String) -> Result<Vec<String>, String> {
-    Ok(tool_state_ref(&load_state(), &key).config_order.clone())
+    let state = load_state()?;
+    Ok(tool_state_ref(&state, &key)?.config_order.clone())
 }
 
 #[tauri::command]
 pub fn save_config_order(key: String, order: Vec<String>) -> Result<(), String> {
-    update_state(|s| tool_state_mut(s, &key).config_order = order)
+    update_tool_state(&key, |tool| tool.config_order = order)
+}
+
+// ---------------------------------------------------------------------------
+// Tauri commands — Active profile selection
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn load_active_profile_id(key: String) -> Result<Option<String>, String> {
+    let state = load_state()?;
+    Ok(tool_state_ref(&state, &key)?.active_profile_id.clone())
+}
+
+#[tauri::command]
+pub fn save_active_profile_id(key: String, profile_id: Option<String>) -> Result<(), String> {
+    update_tool_state(&key, |tool| tool.active_profile_id = profile_id)
+}
+
+#[tauri::command]
+pub fn load_profile_ids(key: String) -> Result<BTreeMap<String, String>, String> {
+    let state = load_state()?;
+    Ok(tool_state_ref(&state, &key)?.profile_ids.clone())
+}
+
+#[tauri::command]
+pub fn save_profile_index(
+    key: String,
+    order: Vec<String>,
+    profile_ids: BTreeMap<String, String>,
+    active_profile_id: Option<String>,
+) -> Result<(), String> {
+    save_profile_index_state(
+        &key,
+        &ProfileIndexState {
+            order,
+            profile_ids,
+            active_profile_id,
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -337,12 +456,13 @@ pub fn save_config_order(key: String, order: Vec<String>) -> Result<(), String> 
 
 #[tauri::command]
 pub fn load_use_builtin_terminal(key: String) -> Result<bool, String> {
-    Ok(tool_state_ref(&load_state(), &key).use_builtin_terminal)
+    let state = load_state()?;
+    Ok(tool_state_ref(&state, &key)?.use_builtin_terminal)
 }
 
 #[tauri::command]
 pub fn save_use_builtin_terminal(key: String, value: bool) -> Result<(), String> {
-    update_state(|s| tool_state_mut(s, &key).use_builtin_terminal = value)
+    update_tool_state(&key, |tool| tool.use_builtin_terminal = value)
 }
 
 // ---------------------------------------------------------------------------
@@ -351,12 +471,13 @@ pub fn save_use_builtin_terminal(key: String, value: bool) -> Result<(), String>
 
 #[tauri::command]
 pub fn load_project_drop_path_mode(key: String) -> Result<String, String> {
-    Ok(tool_state_ref(&load_state(), &key).project_drop_path_mode.clone())
+    let state = load_state()?;
+    Ok(tool_state_ref(&state, &key)?.project_drop_path_mode.clone())
 }
 
 #[tauri::command]
 pub fn save_project_drop_path_mode(key: String, value: String) -> Result<(), String> {
-    update_state(|s| tool_state_mut(s, &key).project_drop_path_mode = value)
+    update_tool_state(&key, |tool| tool.project_drop_path_mode = value)
 }
 
 // ---------------------------------------------------------------------------
@@ -365,14 +486,70 @@ pub fn save_project_drop_path_mode(key: String, value: String) -> Result<(), Str
 
 #[tauri::command]
 pub fn load_last_active_main_tab() -> Result<String, String> {
-    Ok(load_state().last_active_main_tab)
+    Ok(normalize_main_tab(&load_state()?.last_active_main_tab)
+        .as_str()
+        .to_string())
 }
 
 #[tauri::command]
 pub fn save_last_active_main_tab(tab: String) -> Result<(), String> {
-    let normalized = match tab.as_str() {
-        "config" | "terminal" | "project" | "orchestration" => tab,
-        _ => "config".to_string(),
-    };
+    let normalized = normalize_main_tab(&tab).as_str().to_string();
     update_state(|s| s.last_active_main_tab = normalized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identical_profile_ids_remain_scoped_by_cli_kind() {
+        let mut state = AppState::default();
+        tool_state_mut(&mut state, "claude")
+            .expect("claude state")
+            .active_profile_id = Some("default".to_string());
+        tool_state_mut(&mut state, "codex")
+            .expect("codex state")
+            .active_profile_id = Some("default".to_string());
+
+        assert_eq!(
+            tool_state_ref(&state, "claude")
+                .expect("claude state")
+                .active_profile_id
+                .as_deref(),
+            Some("default"),
+        );
+        assert_eq!(
+            tool_state_ref(&state, "codex")
+                .expect("codex state")
+                .active_profile_id
+                .as_deref(),
+            Some("default"),
+        );
+        assert!(tool_state_ref(&state, "opencode")
+            .expect("opencode state")
+            .active_profile_id
+            .is_none());
+
+        tool_state_mut(&mut state, "claude")
+            .expect("claude state")
+            .profile_ids
+            .insert("方案".to_string(), "default".to_string());
+        assert!(tool_state_ref(&state, "codex")
+            .expect("codex state")
+            .profile_ids
+            .is_empty());
+    }
+
+    #[test]
+    fn unknown_state_fields_survive_a_serde_round_trip() {
+        let input = serde_json::json!({
+            "claude": { "futureToolField": "keep" },
+            "futureRootField": { "enabled": true }
+        });
+        let state: AppState = serde_json::from_value(input).expect("decode state");
+        let output = serde_json::to_value(state).expect("encode state");
+
+        assert_eq!(output["claude"]["futureToolField"], "keep");
+        assert_eq!(output["futureRootField"]["enabled"], Value::Bool(true));
+    }
 }

@@ -12,6 +12,8 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+use crate::file_transaction::{restore_json_backup_if_missing, write_json_atomic};
+
 // ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
@@ -32,16 +34,16 @@ fn claude_config_path() -> Result<PathBuf, String> {
 
 /// Load a configs file.  Returns an empty map when the file does not exist.
 fn load_configs_from(path: &PathBuf) -> Result<HashMap<String, HashMap<String, String>>, String> {
+    restore_json_backup_if_missing(path, "Claude Code 配置方案")?;
     if !path.exists() {
         return Ok(HashMap::new());
     }
 
-    let raw = fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read config file: {e}"))?;
+    let raw = fs::read_to_string(path).map_err(|e| format!("Failed to read config file: {e}"))?;
 
     // Parse as generic JSON first so we can handle any value type gracefully.
-    let json: Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("Failed to parse config file: {e}"))?;
+    let json: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("Failed to parse config file: {e}"))?;
 
     let obj = json
         .as_object()
@@ -85,10 +87,33 @@ fn save_configs_to(
     let json = serde_json::to_string_pretty(configs)
         .map_err(|e| format!("Failed to serialise configs: {e}"))?;
 
-    fs::write(path, json.as_bytes())
-        .map_err(|e| format!("Failed to write config file: {e}"))?;
+    write_json_atomic(path, json.as_bytes(), "Claude Code 配置方案")
+}
 
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn profile_round_trip_preserves_unknown_environment_fields() {
+        let directory = std::env::temp_dir().join(format!("cc-launcher-{}", Uuid::new_v4()));
+        let path = directory.join("env_configs.json");
+        let mut vars = HashMap::new();
+        vars.insert("ANTHROPIC_MODEL".to_string(), "known-model".to_string());
+        vars.insert(
+            "FUTURE_CLAUDE_OPTION".to_string(),
+            "preserve-me".to_string(),
+        );
+        let mut configs = HashMap::new();
+        configs.insert("profile".to_string(), vars);
+
+        save_configs_to(&path, &configs).expect("save profiles");
+        let loaded = load_configs_from(&path).expect("load profiles");
+
+        assert_eq!(loaded, configs);
+        let _ = fs::remove_dir_all(directory);
+    }
 }
 
 // ---------------------------------------------------------------------------

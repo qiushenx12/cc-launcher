@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 pub use session::PtySession;
 
+use crate::cli_contract::CliKind;
 use crate::tab_cli::TabPermission;
 
 // ── Event payloads ────────────────────────────────────────────────────────────
@@ -18,18 +19,21 @@ use crate::tab_cli::TabPermission;
 #[derive(Clone, Serialize)]
 struct PtyOutputPayload {
     tab_id: u32,
+    cli_kind: CliKind,
     data: String,
 }
 
 #[derive(Clone, Serialize)]
 struct PtyStatusPayload {
     tab_id: u32,
+    cli_kind: CliKind,
     alive: bool,
 }
 
 #[derive(Clone, Serialize)]
 struct PtyTitlePayload {
     tab_id: u32,
+    cli_kind: CliKind,
     title: String,
     has_spinner: bool,
 }
@@ -45,8 +49,12 @@ fn extract_osc0_title(data: &[u8]) -> Option<String> {
             let start = i + prefix.len();
             let mut end = start;
             while end < data.len() {
-                if data[end] == 0x07 { break; }
-                if data[end] == 0x1b && end + 1 < data.len() && data[end + 1] == b'\\' { break; }
+                if data[end] == 0x07 {
+                    break;
+                }
+                if data[end] == 0x1b && end + 1 < data.len() && data[end + 1] == b'\\' {
+                    break;
+                }
                 end += 1;
             }
             if end > start && end < data.len() {
@@ -70,9 +78,13 @@ fn is_claude_working(title: &str) -> bool {
 /// Check if the buffer starts with "tab-" (ignoring leading whitespace/control chars).
 fn is_tab_command_prefix(buf: &[u8]) -> bool {
     let prefix = b"tab-";
-    let trimmed = buf.iter().position(|&b| b != b' ' && b != b'\t' && b != b'\r' && b != b'\n');
+    let trimmed = buf
+        .iter()
+        .position(|&b| b != b' ' && b != b'\t' && b != b'\r' && b != b'\n');
     match trimmed {
-        Some(start) if start + prefix.len() <= buf.len() => &buf[start..start + prefix.len()] == prefix,
+        Some(start) if start + prefix.len() <= buf.len() => {
+            &buf[start..start + prefix.len()] == prefix
+        }
         _ => false,
     }
 }
@@ -109,6 +121,7 @@ pub fn pty_create(
     cols: u16,
     rows: u16,
     session_id: Option<String>,
+    cli_kind: Option<CliKind>,
     app: AppHandle,
     state: State<'_, Mutex<PtyManager>>,
 ) -> Result<u32, String> {
@@ -116,9 +129,15 @@ pub fn pty_create(
         return Err("cmd must not be empty".into());
     }
 
+    let cli_kind = cli_kind.unwrap_or_default();
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| format!("openpty failed: {e}"))?;
 
     #[cfg(windows)]
@@ -152,14 +171,18 @@ pub fn pty_create(
         cmd_builder.cwd(dir);
     }
 
-    let child = pair.slave.spawn_command(cmd_builder)
+    let child = pair
+        .slave
+        .spawn_command(cmd_builder)
         .map_err(|e| format!("spawn failed: {e}"))?;
     let child_pid = child.process_id();
 
     let master = pair.master;
-    let writer = master.take_writer()
+    let writer = master
+        .take_writer()
         .map_err(|e| format!("take_writer failed: {e}"))?;
-    let mut reader = master.try_clone_reader()
+    let mut reader = master
+        .try_clone_reader()
         .map_err(|e| format!("clone reader failed: {e}"))?;
 
     let output_lines: Arc<std::sync::Mutex<VecDeque<String>>> =
@@ -173,16 +196,20 @@ pub fn pty_create(
         let mut mgr = state.lock().map_err(|e| e.to_string())?;
         let id = mgr.next_id;
         mgr.next_id += 1;
-        mgr.sessions.insert(id, PtySession {
-            master,
-            writer,
-            child,
-            child_pid,
-            output_lines,
-            permission: TabPermission::default(),
-            title,
-            session_id,
-        });
+        mgr.sessions.insert(
+            id,
+            PtySession {
+                cli_kind,
+                master,
+                writer,
+                child,
+                child_pid,
+                output_lines,
+                permission: TabPermission::default(),
+                title,
+                session_id,
+            },
+        );
         mgr.line_buffers.insert(id, Vec::new());
         id
     };
@@ -200,7 +227,15 @@ pub fn pty_create(
                             *t = title_str.clone();
                         }
                         let spinner = is_claude_working(&title_str);
-                        let _ = app_clone.emit("pty_title", PtyTitlePayload { tab_id, title: title_str, has_spinner: spinner });
+                        let _ = app_clone.emit(
+                            "pty_title",
+                            PtyTitlePayload {
+                                tab_id,
+                                cli_kind,
+                                title: title_str,
+                                has_spinner: spinner,
+                            },
+                        );
                     }
 
                     // Populate output_lines for tab-read command
@@ -218,12 +253,26 @@ pub fn pty_create(
                     }
 
                     let encoded = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-                    let _ = app_clone.emit("pty_output", PtyOutputPayload { tab_id, data: encoded });
+                    let _ = app_clone.emit(
+                        "pty_output",
+                        PtyOutputPayload {
+                            tab_id,
+                            cli_kind,
+                            data: encoded,
+                        },
+                    );
                 }
                 Err(_) => break,
             }
         }
-        let _ = app_clone.emit("pty_status", PtyStatusPayload { tab_id, alive: false });
+        let _ = app_clone.emit(
+            "pty_status",
+            PtyStatusPayload {
+                tab_id,
+                cli_kind,
+                alive: false,
+            },
+        );
     });
 
     Ok(tab_id)
@@ -304,7 +353,9 @@ pub fn pty_write(
 
             let line_bytes: Vec<u8> = line_buffer.drain(..=newline_pos).collect();
             let line_str = String::from_utf8_lossy(&line_bytes);
-            let line_clean = line_str.trim_matches(|c: char| c == '\r' || c == '\n').to_string();
+            let line_clean = line_str
+                .trim_matches(|c: char| c == '\r' || c == '\n')
+                .to_string();
 
             if line_clean.starts_with("tab-") {
                 if let Some(cmd) = crate::tab_cli::parse_tab_command(&line_clean) {
@@ -319,11 +370,21 @@ pub fn pty_write(
                             // Apply pending actions (add/remove pending replies) -- critical for --wait mode
                             for action in result.pending_actions {
                                 match action {
-                                    crate::tab_cli::PendingAction::AddReply { caller_tab, entry } => {
-                                        mgr.pending_replies.entry(caller_tab).or_default().push(entry);
+                                    crate::tab_cli::PendingAction::AddReply {
+                                        caller_tab,
+                                        entry,
+                                    } => {
+                                        mgr.pending_replies
+                                            .entry(caller_tab)
+                                            .or_default()
+                                            .push(entry);
                                     }
-                                    crate::tab_cli::PendingAction::RemoveReply { caller_tab, index } => {
-                                        if let Some(list) = mgr.pending_replies.get_mut(&caller_tab) {
+                                    crate::tab_cli::PendingAction::RemoveReply {
+                                        caller_tab,
+                                        index,
+                                    } => {
+                                        if let Some(list) = mgr.pending_replies.get_mut(&caller_tab)
+                                        {
                                             if index < list.len() {
                                                 list.remove(index);
                                                 if list.is_empty() {
@@ -338,7 +399,8 @@ pub fn pty_write(
                         Err(e) => {
                             if let Some(session) = mgr.sessions.get_mut(&tab_id) {
                                 use std::io::Write;
-                                let err_msg = crate::tab_cli::format_message(&format!("Error: {}", e));
+                                let err_msg =
+                                    crate::tab_cli::format_message(&format!("Error: {}", e));
                                 let _ = session.writer.write_all(err_msg.as_bytes());
                             }
                         }
@@ -375,13 +437,24 @@ pub fn pty_write(
 
 #[tauri::command]
 pub fn pty_resize(
-    tab_id: u32, cols: u16, rows: u16,
+    tab_id: u32,
+    cols: u16,
+    rows: u16,
     state: State<'_, Mutex<PtyManager>>,
 ) -> Result<(), String> {
     let mgr = state.lock().map_err(|e| e.to_string())?;
-    let session = mgr.sessions.get(&tab_id)
+    let session = mgr
+        .sessions
+        .get(&tab_id)
         .ok_or_else(|| format!("no session for tab_id {tab_id}"))?;
-    session.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+    session
+        .master
+        .resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| format!("resize failed: {e}"))?;
     Ok(())
 }
@@ -403,10 +476,7 @@ fn kill_process_tree(pid: u32) {
 }
 
 #[tauri::command]
-pub fn pty_kill(
-    tab_id: u32,
-    state: State<'_, Mutex<PtyManager>>,
-) -> Result<(), String> {
+pub fn pty_kill(tab_id: u32, state: State<'_, Mutex<PtyManager>>) -> Result<(), String> {
     let mut mgr = state.lock().map_err(|e| e.to_string())?;
     kill_session(&mut mgr, tab_id);
     Ok(())

@@ -1,0 +1,7 @@
+{
+  "legacy-profile": {
+    "ANTHROPIC_BASE_URL": "https://example.invalid",
+    "ANTHROPIC_AUTH_TOKEN": "fixture-secret-never-use",
+    "future_option": "preserve-me"
+  }
+}

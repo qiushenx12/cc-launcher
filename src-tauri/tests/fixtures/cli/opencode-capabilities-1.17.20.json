@@ -1,0 +1,55 @@
+{
+  "fixtureVersion": 1,
+  "capturedAt": "2026-07-14",
+  "kind": "opencode",
+  "cliVersion": "1.17.20",
+  "executableSource": "npm global opencode-ai package",
+  "status": "ready",
+  "issueCode": null,
+  "probes": [
+    {
+      "capability": "version",
+      "command": [
+        "opencode",
+        "--version"
+      ],
+      "status": "available",
+      "evidence": "Returned 1.17.20 with exit code 0."
+    },
+    {
+      "capability": "project_discovery",
+      "command": [
+        "opencode",
+        "debug",
+        "scrap"
+      ],
+      "status": "available",
+      "evidence": "Returned a JSON array with id, worktree, time and sandboxes fields."
+    },
+    {
+      "capability": "session_list_json",
+      "command": [
+        "opencode",
+        "session",
+        "list",
+        "--format",
+        "json",
+        "--max-count",
+        "3"
+      ],
+      "status": "available",
+      "evidence": "Returned a JSON array with id, title, timestamps, projectId and directory fields."
+    },
+    {
+      "capability": "session_resume",
+      "command": [
+        "opencode",
+        "<PROJECT_DIR>",
+        "--session",
+        "<SESSION_ID>"
+      ],
+      "status": "available",
+      "evidence": "Root help declares project as a positional path and --session as the session id to continue."
+    }
+  ]
+}

@@ -2,7 +2,9 @@ import { defineStore } from 'pinia'
 import { ref, computed, nextTick, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { confirm } from '@tauri-apps/plugin-dialog'
-import type { ClaudeSettings, SessionEntry } from '@/types/config'
+import type { ClaudeSettings, CliProfileRef, SessionEntry } from '@/types/config'
+import { formatRedactedEntries } from '@/utils/configSecurity'
+import { useConfigWorkspaceStore } from './configWorkspace'
 
 export interface ClaudeCodeCheckResult {
   installed: boolean
@@ -28,6 +30,7 @@ export const useClaudeStore = defineStore('claude', () => {
   // ── State ──────────────────────────────────────────────────────────────────
   const configs = ref<Record<string, Record<string, string>>>({})
   const configOrder = ref<string[]>([])
+  const profileIds = ref<Record<string, string>>({})
   const activeConfigName = ref<string | null>(null)
   const editingConfig = ref<{ name: string; vars: Record<string, string> }>({
     name: '',
@@ -50,6 +53,10 @@ export const useClaudeStore = defineStore('claude', () => {
   const switchToProject = ref(false)
   const scope = ref<'user' | 'system'>('user')
   const statusMessage = ref('')
+  const settingsSourcePath = ref('')
+  const settingsSourceKind = ref<'settings' | 'legacy' | 'missing' | string>('missing')
+  const settingsUsingLegacyPath = ref(false)
+  const editingBaseline = ref(serializeDraft(editingConfig.value))
 
   // ── Computed ───────────────────────────────────────────────────────────────
   const visibleSessions = computed(() =>
@@ -60,11 +67,87 @@ export const useClaudeStore = defineStore('claude', () => {
     sessions.value.length > sessionDisplayCount.value
   )
 
+  const isConfigDirty = computed(() => serializeDraft(editingConfig.value) !== editingBaseline.value)
+
+  const activeProfileRef = computed<CliProfileRef | null>(() => activeConfigName.value
+    && profileIds.value[activeConfigName.value]
+    ? { cliKind: 'claude', profileId: profileIds.value[activeConfigName.value] }
+    : null)
+
+  function createProfileId(): string {
+    return `profile-${crypto.randomUUID()}`
+  }
+
+  function serializeRecord(record: Record<string, string>): string {
+    return JSON.stringify(Object.entries(record).sort(([a], [b]) => a.localeCompare(b)))
+  }
+
+  function serializeConfigs(record: Record<string, Record<string, string>>): string {
+    return JSON.stringify(
+      Object.entries(record)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([name, vars]) => [
+          name,
+          Object.entries(vars).sort(([a], [b]) => a.localeCompare(b)),
+        ]),
+    )
+  }
+
+  function serializeDraft(draft: { name: string; vars: Record<string, string> }): string {
+    return JSON.stringify({
+      name: draft.name,
+      vars: Object.fromEntries(Object.entries(draft.vars).sort(([a], [b]) => a.localeCompare(b))),
+    })
+  }
+
+  function markEditingClean() {
+    editingBaseline.value = serializeDraft(editingConfig.value)
+  }
+
+  function commitSelectedConfig(name: string) {
+    activeConfigName.value = name
+    const vars = configs.value[name] ?? {}
+    editingConfig.value = { name, vars: { ...vars } }
+    activeSource.value = name
+    markEditingClean()
+  }
+
+  function discardConfigChanges() {
+    if (activeConfigName.value && configs.value[activeConfigName.value]) {
+      commitSelectedConfig(activeConfigName.value)
+      return
+    }
+    editingConfig.value = { name: '', vars: {} }
+    activeSource.value = 'manual'
+    markEditingClean()
+  }
+
+  async function confirmDiscardConfigChanges(action: string): Promise<boolean> {
+    if (!isConfigDirty.value) return true
+    const accepted = await confirm(
+      `当前配置有未保存的修改。${action}将放弃这些修改，是否继续？`,
+      { title: '未保存的配置', kind: 'warning' },
+    )
+    if (accepted) discardConfigChanges()
+    return accepted
+  }
+
+  async function persistActiveProfileId(profileId: string | null) {
+    try {
+      await invoke('save_active_profile_id', { key: 'claude', profileId })
+    } catch (error) {
+      statusMessage.value = `配置已切换，但活动方案状态保存失败: ${error}`
+    }
+  }
+
   // ── Actions ────────────────────────────────────────────────────────────────
   async function loadConfigs() {
     try {
       const result = await invoke<Record<string, Record<string, string>>>('load_claude_configs')
       configs.value = result
+      activeConfigName.value = null
+      editingConfig.value = { name: '', vars: {} }
+      activeSource.value = 'env'
 
       // Load saved order; fall back to Object.keys if none saved
       try {
@@ -81,6 +164,17 @@ export const useClaudeStore = defineStore('claude', () => {
       } catch {
         configOrder.value = Object.keys(result)
       }
+
+      let loadedProfileIds: Record<string, string> = {}
+      try {
+        loadedProfileIds = await invoke<Record<string, string>>('load_profile_ids', { key: 'claude' })
+      } catch {
+        // Existing named profiles are assigned stable IDs below.
+      }
+      const nextProfileIds = Object.fromEntries(
+        Object.keys(result).map(name => [name, loadedProfileIds[name] || createProfileId()]),
+      )
+      profileIds.value = nextProfileIds
 
       // Load saved useBuiltinTerminal
       try {
@@ -99,12 +193,30 @@ export const useClaudeStore = defineStore('claude', () => {
         // keep default relative
       }
 
-      // Auto-select the config that matches the current process environment
+      // Restore the selected profile as a (cli_kind, profile_id) pair.
+      let restoredSelection = false
+      let savedActiveProfileId: string | null = null
+      try {
+        savedActiveProfileId = await invoke<string | null>('load_active_profile_id', { key: 'claude' })
+        const selectedName = savedActiveProfileId
+          ? Object.entries(profileIds.value).find(([, profileId]) => profileId === savedActiveProfileId)?.[0]
+            // Compatibility with the short-lived name-as-ID Stage C development build.
+            ?? (savedActiveProfileId in result ? savedActiveProfileId : null)
+          : null
+        if (selectedName) {
+          commitSelectedConfig(selectedName)
+          restoredSelection = true
+        }
+      } catch {
+        // Environment matching below remains a compatibility fallback.
+      }
+
+      // Auto-select the config that matches the current process environment.
       const allVarNames = new Set<string>()
       for (const vars of Object.values(result)) {
         for (const k of Object.keys(vars)) allVarNames.add(k)
       }
-      if (allVarNames.size > 0) {
+      if (!restoredSelection && allVarNames.size > 0) {
         try {
           const currentEnv = await invoke<Record<string, string>>('get_current_env_vars', {
             varNames: Array.from(allVarNames),
@@ -116,7 +228,7 @@ export const useClaudeStore = defineStore('claude', () => {
               return currentEnv[k] === v
             })
             if (matches && Object.keys(vars).length > 0) {
-              selectConfig(name)
+              commitSelectedConfig(name)
               break
             }
           }
@@ -124,75 +236,214 @@ export const useClaudeStore = defineStore('claude', () => {
           // ignore — env var lookup is best-effort
         }
       }
+      markEditingClean()
+      const activeProfileId = activeProfileRef.value?.profileId ?? null
+      if (serializeRecord(loadedProfileIds) !== serializeRecord(profileIds.value)
+        || savedActiveProfileId !== activeProfileId) {
+        await invoke('save_profile_index', {
+          key: 'claude',
+          order: configOrder.value,
+          profileIds: profileIds.value,
+          activeProfileId,
+        })
+      }
     } catch (e) {
       statusMessage.value = `加载配置失败: ${e}`
     }
   }
 
-  function selectConfig(name: string) {
-    activeConfigName.value = name
-    const vars = configs.value[name] ?? {}
-    editingConfig.value = { name, vars: { ...vars } }
-    activeSource.value = name
+  async function selectConfig(name: string): Promise<boolean> {
+    if (activeConfigName.value === name) return true
+    if (!(await confirmDiscardConfigChanges('切换配置方案'))) return false
+    commitSelectedConfig(name)
+    await persistActiveProfileId(profileIds.value[name] ?? null)
+    return true
   }
 
-  function newConfig() {
+  async function newConfig(): Promise<boolean> {
+    if (!(await confirmDiscardConfigChanges('新建配置方案'))) return false
     activeConfigName.value = null
     editingConfig.value = { name: '', vars: {} }
     activeSource.value = 'manual'
+    markEditingClean()
+    await persistActiveProfileId(null)
+    return true
   }
 
-  async function saveConfig() {
+  async function saveConfig(): Promise<boolean> {
     const name = editingConfig.value.name.trim()
     if (!name) {
       statusMessage.value = '请输入配置名称'
-      return
+      return false
     }
-    // Handle rename: if activeConfigName differs from new name, replace in order
-    if (activeConfigName.value && activeConfigName.value !== name) {
-      const idx = configOrder.value.indexOf(activeConfigName.value)
-      if (idx !== -1) configOrder.value[idx] = name
-      delete configs.value[activeConfigName.value]
+    if (name in configs.value && activeConfigName.value !== name) {
+      statusMessage.value = `配置名称 '${name}' 已存在`
+      return false
     }
-    configs.value[name] = Object.fromEntries(
-      Object.entries(editingConfig.value.vars).filter(
-        ([k, v]) => KNOWN_ENV_KEYS.has(k) && v !== '' && v !== undefined && v !== null
-      )
+
+    const nextConfigs = Object.fromEntries(
+      Object.entries(configs.value).map(([profileId, vars]) => [profileId, { ...vars }]),
     )
-    if (!configOrder.value.includes(name)) {
-      configOrder.value.push(name)
+    const previousName = activeConfigName.value
+    const nextVars = previousName ? { ...(nextConfigs[previousName] ?? {}) } : {}
+    for (const key of KNOWN_ENV_KEYS) {
+      const value = editingConfig.value.vars[key]
+      if (value !== '' && value !== undefined && value !== null) nextVars[key] = value
+      else delete nextVars[key]
     }
-    await persistConfigs()
-    activeConfigName.value = name
-    activeSource.value = name
-    statusMessage.value = `配置 '${name}' 已保存`
+    if (previousName && previousName !== name) delete nextConfigs[previousName]
+    nextConfigs[name] = nextVars
+
+    const nextOrder = [...configOrder.value]
+    if (previousName && previousName !== name) {
+      const index = nextOrder.indexOf(previousName)
+      if (index !== -1) nextOrder[index] = name
+    }
+    if (!nextOrder.includes(name)) nextOrder.push(name)
+    const nextProfileIds = { ...profileIds.value }
+    const profileId = previousName
+      ? nextProfileIds[previousName] ?? createProfileId()
+      : createProfileId()
+    if (previousName && previousName !== name) delete nextProfileIds[previousName]
+    nextProfileIds[name] = profileId
+
+    try {
+      await persistConfigs(nextConfigs, nextOrder, nextProfileIds, profileId)
+      configs.value = nextConfigs
+      configOrder.value = nextOrder
+      profileIds.value = nextProfileIds
+      commitSelectedConfig(name)
+      statusMessage.value = `配置 '${name}' 已保存`
+      return true
+    } catch (error) {
+      statusMessage.value = `保存配置失败，表单内容已保留: ${error}`
+      return false
+    }
   }
 
   async function deleteConfig(name: string) {
-    delete configs.value[name]
-    configOrder.value = configOrder.value.filter(n => n !== name)
-    if (activeConfigName.value === name) {
-      activeConfigName.value = null
-      editingConfig.value = { name: '', vars: {} }
-      activeSource.value = 'env'
+    const nextConfigs = Object.fromEntries(
+      Object.entries(configs.value)
+        .filter(([profileId]) => profileId !== name)
+        .map(([profileId, vars]) => [profileId, { ...vars }]),
+    )
+    const nextOrder = configOrder.value.filter(profileId => profileId !== name)
+    const nextProfileIds = { ...profileIds.value }
+    delete nextProfileIds[name]
+    const deletingActiveProfile = activeConfigName.value === name
+    const nextActiveProfileId = deletingActiveProfile
+      ? null
+      : activeProfileRef.value?.profileId ?? null
+    try {
+      await persistConfigs(nextConfigs, nextOrder, nextProfileIds, nextActiveProfileId)
+      configs.value = nextConfigs
+      configOrder.value = nextOrder
+      profileIds.value = nextProfileIds
+      if (deletingActiveProfile) {
+        activeConfigName.value = null
+        editingConfig.value = { name: '', vars: {} }
+        activeSource.value = 'env'
+        markEditingClean()
+      }
+      statusMessage.value = `配置 '${name}' 已删除`
+    } catch (error) {
+      statusMessage.value = `删除配置失败: ${error}`
     }
-    await persistConfigs()
-    statusMessage.value = `配置 '${name}' 已删除`
   }
 
   async function reorderConfigs(newOrder: string[]) {
-    configOrder.value = newOrder
-    await persistConfigs()
+    try {
+      await persistConfigs(
+        configs.value,
+        newOrder,
+        profileIds.value,
+        activeProfileRef.value?.profileId ?? null,
+      )
+      configOrder.value = [...newOrder]
+    } catch (error) {
+      statusMessage.value = `保存配置排序失败: ${error}`
+    }
   }
 
-  async function persistConfigs() {
+  async function persistConfigs(
+    nextConfigs: Record<string, Record<string, string>>,
+    nextOrder: string[],
+    nextProfileIds: Record<string, string>,
+    nextActiveProfileId: string | null,
+  ) {
+    const previousConfigs = Object.fromEntries(
+      Object.entries(configs.value).map(([name, vars]) => [name, { ...vars }]),
+    )
+    const previousOrder = [...configOrder.value]
+    const previousProfileIds = { ...profileIds.value }
+    const previousActiveProfileId = activeProfileRef.value?.profileId ?? null
+    let configsWritten = false
+    let profileIndexWritten = false
+
+    const verifyPersistedState = async (
+      expectedConfigs: Record<string, Record<string, string>>,
+      expectedOrder: string[],
+      expectedProfileIds: Record<string, string>,
+      expectedActiveProfileId: string | null,
+      phase: '保存' | '回滚',
+    ) => {
+      const [storedConfigs, storedOrder, storedProfileIds, storedActiveProfileId] = await Promise.all([
+        invoke<Record<string, Record<string, string>>>('load_claude_configs'),
+        invoke<string[]>('load_config_order', { key: 'claude' }),
+        invoke<Record<string, string>>('load_profile_ids', { key: 'claude' }),
+        invoke<string | null>('load_active_profile_id', { key: 'claude' }),
+      ])
+      const mismatches: string[] = []
+      if (serializeConfigs(storedConfigs) !== serializeConfigs(expectedConfigs)) mismatches.push('配置方案')
+      if (JSON.stringify(storedOrder) !== JSON.stringify(expectedOrder)) mismatches.push('方案顺序')
+      if (serializeRecord(storedProfileIds) !== serializeRecord(expectedProfileIds)) mismatches.push('profile ID')
+      if (storedActiveProfileId !== expectedActiveProfileId) mismatches.push('当前方案')
+      if (mismatches.length > 0) {
+        throw new Error(`${phase}后磁盘校验不一致：${mismatches.join('、')}`)
+      }
+    }
+
     try {
       await invoke('save_claude_configs', {
-        configs: configs.value,
+        configs: nextConfigs,
       })
-      await invoke('save_config_order', { key: 'claude', order: configOrder.value })
+      configsWritten = true
+      await invoke('save_profile_index', {
+        key: 'claude',
+        order: nextOrder,
+        profileIds: nextProfileIds,
+        activeProfileId: nextActiveProfileId,
+      })
+      profileIndexWritten = true
+      await verifyPersistedState(
+        nextConfigs,
+        nextOrder,
+        nextProfileIds,
+        nextActiveProfileId,
+        '保存',
+      )
     } catch (e) {
-      statusMessage.value = `保存配置失败: ${e}`
+      if (configsWritten || profileIndexWritten) {
+        try {
+          await invoke('save_claude_configs', { configs: previousConfigs })
+          await invoke('save_profile_index', {
+            key: 'claude',
+            order: previousOrder,
+            profileIds: previousProfileIds,
+            activeProfileId: previousActiveProfileId,
+          })
+          await verifyPersistedState(
+            previousConfigs,
+            previousOrder,
+            previousProfileIds,
+            previousActiveProfileId,
+            '回滚',
+          )
+        } catch (rollbackError) {
+          throw new Error(`保存失败，自动恢复旧数据也未通过校验：${rollbackError}；原始错误：${e}`)
+        }
+      }
+      throw e
     }
   }
 
@@ -230,7 +481,7 @@ export const useClaudeStore = defineStore('claude', () => {
     const scopeLabel = scope.value === 'system' ? '系统（所有用户）' : '当前用户'
     const confirmed = await confirm(
       `将以下 ${nonEmpty.length} 个环境变量写入注册表（范围: ${scopeLabel}）:\n\n` +
-        nonEmpty.map(([k, v]) => `  ${k}=${v}`).join('\n'),
+        formatRedactedEntries(Object.fromEntries(nonEmpty)).map(line => `  ${line}`).join('\n'),
       { title: '确认应用环境变量', kind: 'warning' }
     )
     if (!confirmed) return
@@ -308,8 +559,11 @@ export const useClaudeStore = defineStore('claude', () => {
       const result = await invoke<ClaudeSettings>('load_claude_settings')
       skipPermissions.value = result.skipPermissions
       awaySummaryDisabled.value = result.awaySummaryDisabled
-    } catch {
-      // use defaults
+      settingsSourcePath.value = result.sourcePath ?? ''
+      settingsSourceKind.value = result.sourceKind ?? 'settings'
+      settingsUsingLegacyPath.value = result.usingLegacyPath ?? false
+    } catch (error) {
+      statusMessage.value = `加载 Claude Code settings.json 失败: ${error}`
     }
   }
 
@@ -321,6 +575,11 @@ export const useClaudeStore = defineStore('claude', () => {
           awaySummaryDisabled: awaySummaryDisabled.value,
         }
       })
+      settingsSourceKind.value = 'settings'
+      settingsUsingLegacyPath.value = false
+      settingsSourcePath.value = settingsSourcePath.value
+        ? settingsSourcePath.value.replace(/(?:claude|config)\.json$/i, 'settings.json')
+        : '~/.claude/settings.json'
     } catch (e) {
       statusMessage.value = `保存设置失败: ${e}`
     }
@@ -373,6 +632,11 @@ export const useClaudeStore = defineStore('claude', () => {
           return
         }
 
+        const configWorkspaceStore = useConfigWorkspaceStore()
+        if (!(await configWorkspaceStore.confirmDiscardActiveChanges('启动内置 Claude Code 会话'))) {
+          return
+        }
+
         // Switch to Project before creating the xterm instance, so the
         // terminal container is visible when xterm measures itself.
         switchToProject.value = true
@@ -419,6 +683,7 @@ export const useClaudeStore = defineStore('claude', () => {
     // state
     configs,
     configOrder,
+    profileIds,
     activeConfigName,
     editingConfig,
     activeSource,
@@ -438,9 +703,14 @@ export const useClaudeStore = defineStore('claude', () => {
     switchToProject,
     scope,
     statusMessage,
+    settingsSourcePath,
+    settingsSourceKind,
+    settingsUsingLegacyPath,
     // computed
     visibleSessions,
     hasMoreSessions,
+    isConfigDirty,
+    activeProfileRef,
     // actions
     loadConfigs,
     selectConfig,
@@ -460,5 +730,7 @@ export const useClaudeStore = defineStore('claude', () => {
     launchClaude,
     loadLaunchDir,
     saveLaunchDir,
+    discardConfigChanges,
+    confirmDiscardConfigChanges,
   }
 })

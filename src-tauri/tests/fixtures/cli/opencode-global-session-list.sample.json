@@ -1,0 +1,26 @@
+[
+  {
+    "id": "ses_global_one",
+    "title": "global one",
+    "updated": 1700000002000,
+    "created": 1700000000000,
+    "projectId": "global",
+    "directory": "D:\\work\\global-one"
+  },
+  {
+    "id": "ses_global_one_duplicate",
+    "title": "global one duplicate",
+    "updated": 1700000003000,
+    "created": 1700000001000,
+    "projectId": "global",
+    "directory": "d:/work/global-one/"
+  },
+  {
+    "id": "ses_global_two",
+    "title": "global two",
+    "updated": 1700000004000,
+    "created": 1700000002000,
+    "projectId": "global",
+    "directory": "C:\\Users\\fixture\\global-two"
+  }
+]

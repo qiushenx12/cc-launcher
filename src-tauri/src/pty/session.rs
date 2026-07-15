@@ -3,9 +3,12 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::{Arc, Mutex as StdMutex};
 
+use crate::cli_contract::CliKind;
 use crate::tab_cli::TabPermission;
 
 pub struct PtySession {
+    /// CLI domain that owns this PTY. Cross-domain tab commands are rejected.
+    pub cli_kind: CliKind,
     pub master: Box<dyn MasterPty + Send>,
     pub writer: Box<dyn Write + Send>,
     pub child: Box<dyn Child + Send + Sync>,

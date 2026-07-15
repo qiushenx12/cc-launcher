@@ -1,0 +1,15 @@
+{
+  "window": {
+    "width": 1200,
+    "height": 800
+  },
+  "claude": {
+    "config_order": [
+      "legacy-profile"
+    ]
+  },
+  "last_active_main_tab": "project",
+  "future_field": {
+    "keep": true
+  }
+}

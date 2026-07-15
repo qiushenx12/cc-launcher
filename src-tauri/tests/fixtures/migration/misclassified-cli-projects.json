@@ -1,0 +1,142 @@
+{
+  "projects": [
+    {
+      "cliKind": "claude",
+      "id": "project-claude",
+      "name": "claude-only",
+      "path": "C:\\workspace\\shared",
+      "createdAt": 1,
+      "updatedAt": 1,
+      "order": 0,
+      "recentItems": []
+    },
+    {
+      "cliKind": "claude",
+      "id": "project-codex-stale",
+      "name": "shared",
+      "path": "C:\\workspace\\shared",
+      "createdAt": 2,
+      "updatedAt": 2,
+      "order": 1,
+      "recentItems": [],
+      "staleProjectField": "preserve-me"
+    },
+    {
+      "cliKind": "codex",
+      "id": "project-codex-current",
+      "name": "shared",
+      "path": "C:\\workspace\\shared",
+      "createdAt": 3,
+      "updatedAt": 3,
+      "order": 0,
+      "recentItems": []
+    },
+    {
+      "cliKind": "claude",
+      "id": "project-opencode-stale",
+      "name": "open",
+      "path": "C:\\workspace\\open",
+      "createdAt": 4,
+      "updatedAt": 4,
+      "order": 2,
+      "recentItems": []
+    },
+    {
+      "cliKind": "opencode",
+      "id": "project-opencode-current",
+      "name": "open",
+      "path": "C:\\workspace\\open",
+      "createdAt": 5,
+      "updatedAt": 5,
+      "order": 0,
+      "recentItems": []
+    }
+  ],
+  "sessions": [
+    {
+      "cliKind": "claude",
+      "id": "session-claude",
+      "projectId": "project-claude",
+      "name": "Claude session",
+      "claudeSessionId": "claude-native",
+      "createdAt": 1,
+      "updatedAt": 1,
+      "order": 0
+    },
+    {
+      "cliKind": "claude",
+      "id": "session-codex-thread-1",
+      "projectId": "project-codex-stale",
+      "name": "stale Codex history",
+      "createdAt": 2,
+      "updatedAt": 2,
+      "order": 0
+    },
+    {
+      "cliKind": "claude",
+      "id": "session-misattached-claude",
+      "projectId": "project-codex-stale",
+      "name": "real Claude session",
+      "claudeSessionId": "claude-shared-native",
+      "createdAt": 2,
+      "updatedAt": 2,
+      "order": 1
+    },
+    {
+      "cliKind": "claude",
+      "id": "session-local-codex",
+      "projectId": "project-codex-stale",
+      "name": "local Codex session",
+      "createdAt": 2,
+      "updatedAt": 2,
+      "order": 2
+    },
+    {
+      "cliKind": "codex",
+      "id": "session-codex-current",
+      "projectId": "project-codex-current",
+      "name": "current Codex history",
+      "nativeSessionId": "thread-1",
+      "launchMode": "resume",
+      "createdAt": 3,
+      "updatedAt": 3,
+      "order": 0
+    },
+    {
+      "cliKind": "claude",
+      "id": "session-opencode-ses_1",
+      "projectId": "project-opencode-stale",
+      "name": "stale OpenCode history",
+      "createdAt": 4,
+      "updatedAt": 4,
+      "order": 0
+    },
+    {
+      "cliKind": "opencode",
+      "id": "session-opencode-current",
+      "projectId": "project-opencode-current",
+      "name": "current OpenCode history",
+      "nativeSessionId": "ses_1",
+      "launchMode": "resume",
+      "createdAt": 5,
+      "updatedAt": 5,
+      "order": 0
+    }
+  ],
+  "activeProjectIds": {
+    "claude": "project-codex-stale",
+    "codex": "project-codex-current",
+    "opencode": "project-opencode-current"
+  },
+  "activeSessionIds": {
+    "claude": "session-codex-thread-1",
+    "codex": "session-codex-current",
+    "opencode": "session-opencode-current"
+  },
+  "expandedProjectIds": [
+    "project-codex-stale",
+    "project-codex-current",
+    "project-opencode-stale",
+    "project-opencode-current"
+  ]
+}

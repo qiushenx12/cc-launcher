@@ -7,7 +7,7 @@
         type="text"
         :value="modelValue"
         :disabled="disabled"
-        placeholder="手动输入或从下拉选择"
+        :placeholder="placeholder"
         @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)"
       />
       <select
@@ -17,27 +17,31 @@
         @change="onSelectChange"
       >
         <option value="" disabled>{{ models.length ? '选择模型' : '未获取' }}</option>
-        <option v-for="m in models" :key="m" :value="m">{{ m }}</option>
+        <option v-for="model in models" :key="model" :value="model">{{ model }}</option>
       </select>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-defineProps<{
+withDefaults(defineProps<{
   label: string
   modelValue: string
   models: string[]
   disabled?: boolean
-}>()
+  placeholder?: string
+}>(), {
+  disabled: false,
+  placeholder: '手动输入或从下拉选择',
+})
 
 const emit = defineEmits<{
-  (e: 'update:modelValue', value: string): void
+  (event: 'update:modelValue', value: string): void
 }>()
 
 function onSelectChange(event: Event) {
-  const val = (event.target as HTMLSelectElement).value
-  if (val) emit('update:modelValue', val)
+  const value = (event.target as HTMLSelectElement).value
+  if (value) emit('update:modelValue', value)
 }
 </script>
 
@@ -52,22 +56,22 @@ function onSelectChange(event: Event) {
 .field-label {
   width: 110px;
   flex-shrink: 0;
-  font-size: var(--font-size-base);
   color: var(--text-secondary);
   text-align: right;
+  font-size: var(--font-size-base);
 }
 
 .model-field {
+  min-width: 0;
   flex: 1;
   display: flex;
   align-items: center;
   gap: 6px;
-  min-width: 0;
 }
 
 .model-field__input {
-  flex: 1;
   min-width: 0;
+  flex: 1;
 }
 
 .model-field__select {

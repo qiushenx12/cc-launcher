@@ -1,5 +1,5 @@
-use std::process::Command;
 use std::collections::HashMap;
+use std::process::Command;
 
 #[tauri::command]
 pub fn get_current_env_vars(var_names: Vec<String>) -> HashMap<String, String> {

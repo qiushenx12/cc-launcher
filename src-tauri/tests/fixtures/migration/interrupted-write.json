@@ -1,0 +1,6 @@
+{
+  "originalExists": true,
+  "temporaryExists": true,
+  "backupExists": true,
+  "expectedRecoverySource": "original"
+}

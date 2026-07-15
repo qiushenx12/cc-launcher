@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OpenCode debug scrap output",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "id",
+      "worktree",
+      "time",
+      "sandboxes"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "worktree": {
+        "type": "string"
+      },
+      "vcs": {
+        "type": "string"
+      },
+      "icon": {
+        "type": "object",
+        "properties": {
+          "color": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "time": {
+        "type": "object",
+        "required": [
+          "created",
+          "updated"
+        ],
+        "properties": {
+          "created": {
+            "type": "integer"
+          },
+          "updated": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": true
+      },
+      "sandboxes": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  }
+}

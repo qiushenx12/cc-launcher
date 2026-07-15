@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import type { SnapshotEntry, TerminalSnapshot } from '@/types/terminal'
 import type { AgentRole, PresetEntry } from '@/types/orchestration'
+import type { CliKind } from '@/types/cli'
 
 export const useTabCommStore = defineStore('tabComm', () => {
   // Permission config modal state
@@ -17,6 +18,7 @@ export const useTabCommStore = defineStore('tabComm', () => {
   // Snapshot list modal state
   const snapshotListOpen = ref(false)
   const snapshots = ref<SnapshotEntry[]>([])
+  const snapshotCliKind = ref<CliKind>('claude')
 
   // Toast notification
   const toastMessage = ref('')
@@ -96,9 +98,10 @@ export const useTabCommStore = defineStore('tabComm', () => {
     }
   }
 
-  async function openSnapshotList() {
+  async function openSnapshotList(cliKind: CliKind = 'claude') {
     try {
-      snapshots.value = await invoke('list_terminal_snapshots')
+      snapshotCliKind.value = cliKind
+      snapshots.value = await invoke('list_terminal_snapshots', { cliKind })
       snapshotListOpen.value = true
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -110,15 +113,16 @@ export const useTabCommStore = defineStore('tabComm', () => {
     snapshotListOpen.value = false
   }
 
-  async function saveSnapshot(projectPath: string) {
+  async function saveSnapshot(projectPath: string, cliKind: CliKind = snapshotCliKind.value) {
     try {
       await invoke('save_terminal_snapshot', {
         projectPath,
+        cliKind,
         canvas: snapshotCanvasState.value,
         roles: tabRoles.value,
       })
       // Refresh list
-      snapshots.value = await invoke('list_terminal_snapshots')
+      snapshots.value = await invoke('list_terminal_snapshots', { cliKind })
       showToast('快照保存成功')
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -126,9 +130,15 @@ export const useTabCommStore = defineStore('tabComm', () => {
     }
   }
 
-  async function loadSnapshot(projectPath: string): Promise<TerminalSnapshot | null> {
+  async function loadSnapshot(
+    projectPath: string,
+    cliKind: CliKind = snapshotCliKind.value,
+  ): Promise<TerminalSnapshot | null> {
     try {
-      const snapshot = await invoke<TerminalSnapshot | null>('load_terminal_snapshot', { projectPath })
+      const snapshot = await invoke<TerminalSnapshot | null>('load_terminal_snapshot', {
+        projectPath,
+        cliKind,
+      })
       return snapshot
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -221,6 +231,7 @@ export const useTabCommStore = defineStore('tabComm', () => {
     permissionSaved,
     snapshotListOpen,
     snapshots,
+    snapshotCliKind,
     toastMessage,
     toastType,
     openPermConfig,

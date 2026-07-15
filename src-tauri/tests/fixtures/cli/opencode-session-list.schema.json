@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OpenCode session list JSON output",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "id",
+      "title",
+      "updated",
+      "created",
+      "projectId",
+      "directory"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "title": {
+        "type": "string"
+      },
+      "updated": {
+        "type": "integer"
+      },
+      "created": {
+        "type": "integer"
+      },
+      "projectId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "directory": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": true
+  }
+}

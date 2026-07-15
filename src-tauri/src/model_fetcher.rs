@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 
 fn normalize_base_url(base_url: &str) -> String {
     base_url.trim_end_matches('/').to_string()
@@ -20,19 +20,33 @@ struct Candidate {
     headers: HashMap<String, String>,
 }
 
+fn openai_models_url(base_url: &str) -> String {
+    let normalized = normalize_base_url(base_url);
+    if normalized.ends_with("/v1") {
+        format!("{normalized}/models")
+    } else if normalized.ends_with("/models") {
+        normalized
+    } else {
+        format!("{normalized}/v1/models")
+    }
+}
+
 fn build_endpoint_candidates(base_url: &str, auth_token: &str) -> Vec<Candidate> {
     let normalized = normalize_base_url(base_url);
     let mut candidates = Vec::new();
 
     let mut bearer_headers: HashMap<String, String> = HashMap::new();
     if !auth_token.is_empty() {
-        bearer_headers.insert("Authorization".to_string(), format!("Bearer {}", auth_token));
+        bearer_headers.insert(
+            "Authorization".to_string(),
+            format!("Bearer {}", auth_token),
+        );
     }
 
     // 1. OpenAI/new-api/ollama
     candidates.push(Candidate {
         label: "OpenAI/new-api/ollama".to_string(),
-        url: format!("{}/v1/models", normalized),
+        url: openai_models_url(&normalized),
         headers: bearer_headers.clone(),
     });
 
@@ -68,11 +82,7 @@ fn build_endpoint_candidates(base_url: &str, auth_token: &str) -> Vec<Candidate>
     if let Ok(parsed) = url::Url::parse(&normalized) {
         let path = parsed.path().trim_end_matches('/');
         if !path.is_empty() {
-            let root_url = format!(
-                "{}://{}",
-                parsed.scheme(),
-                parsed.host_str().unwrap_or("")
-            );
+            let root_url = format!("{}://{}", parsed.scheme(), parsed.host_str().unwrap_or(""));
             let root_url = if let Some(port) = parsed.port() {
                 format!("{}:{}", root_url, port)
             } else {
@@ -168,8 +178,33 @@ pub async fn fetch_claude_models(
     base_url: String,
     auth_token: String,
 ) -> Result<Vec<String>, String> {
-    let candidates = build_endpoint_candidates(&base_url, &auth_token);
+    fetch_provider_models(&base_url, &auth_token).await
+}
 
+pub(crate) async fn fetch_provider_models(
+    base_url: &str,
+    auth_token: &str,
+) -> Result<Vec<String>, String> {
+    fetch_candidates(build_endpoint_candidates(base_url, auth_token)).await
+}
+
+pub(crate) async fn fetch_openai_compatible_models(
+    base_url: &str,
+    auth_token: &str,
+) -> Result<Vec<String>, String> {
+    let mut headers = HashMap::new();
+    if !auth_token.is_empty() {
+        headers.insert("Authorization".to_string(), format!("Bearer {auth_token}"));
+    }
+    fetch_candidates(vec![Candidate {
+        label: "OpenAI compatible".to_string(),
+        url: openai_models_url(base_url),
+        headers,
+    }])
+    .await
+}
+
+async fn fetch_candidates(candidates: Vec<Candidate>) -> Result<Vec<String>, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .no_proxy()
@@ -183,20 +218,47 @@ pub async fn fetch_claude_models(
         }
 
         match req.send().await {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<Value>().await {
-                    Ok(payload) => {
-                        let ids = extract_model_ids(&payload);
-                        if !ids.is_empty() {
-                            return Ok(ids);
-                        }
+            Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
+                Ok(payload) => {
+                    let ids = extract_model_ids(&payload);
+                    if !ids.is_empty() {
+                        return Ok(ids);
                     }
-                    Err(_) => continue,
                 }
-            }
+                Err(_) => continue,
+            },
             _ => continue,
         }
     }
 
-    Err("No model list could be retrieved from any endpoint".to_string())
+    Err("无法从该 API 地址获取模型列表，请检查 Base URL、API Key 和接口兼容性".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openai_model_endpoint_respects_an_existing_v1_path() {
+        assert_eq!(
+            openai_models_url("https://proxy.example.com/api/v1/"),
+            "https://proxy.example.com/api/v1/models"
+        );
+        assert_eq!(
+            openai_models_url("https://proxy.example.com"),
+            "https://proxy.example.com/v1/models"
+        );
+    }
+
+    #[test]
+    fn model_ids_are_sorted_and_deduplicated() {
+        let payload = serde_json::json!({
+            "data": [
+                { "id": "model-b" },
+                { "id": "model-a" },
+                { "id": "model-b" }
+            ]
+        });
+        assert_eq!(extract_model_ids(&payload), vec!["model-a", "model-b"]);
+    }
 }

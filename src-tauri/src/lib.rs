@@ -1,14 +1,21 @@
 pub mod claude_launcher;
+pub mod cli_capabilities;
+pub mod cli_contract;
+pub mod cli_migration;
+pub mod cli_runtime;
+pub mod codex_config;
 pub mod config_store;
 pub mod dependency_manager;
+pub mod file_transaction;
 pub mod model_fetcher;
+pub mod opencode_config;
 pub mod persistent_state;
 pub mod project_manager;
 pub mod pty;
-pub mod tab_cli;
 pub mod registry;
 pub mod session_manager;
 pub mod settings_manager;
+pub mod tab_cli;
 pub mod utils;
 
 mod window_theme {
@@ -47,6 +54,29 @@ pub fn run() {
         })
         .manage(std::sync::Mutex::new(pty::PtyManager::new()))
         .invoke_handler(tauri::generate_handler![
+            // shared CLI contract
+            cli_contract::get_cli_contract,
+            cli_runtime::check_cli,
+            cli_runtime::discover_codex_projects,
+            cli_runtime::list_codex_threads,
+            cli_runtime::discover_opencode_projects,
+            cli_runtime::list_opencode_sessions,
+            // CodeX managed configuration
+            codex_config::load_codex_profiles,
+            codex_config::fetch_codex_models,
+            codex_config::save_codex_profile,
+            codex_config::apply_codex_profile,
+            codex_config::delete_codex_profile,
+            codex_config::resolve_codex_profile,
+            // OpenCode global JSONC synchronization
+            opencode_config::load_opencode_global_config,
+            opencode_config::save_opencode_global_config,
+            opencode_config::fetch_opencode_global_models,
+            opencode_config::save_opencode_provider_key,
+            opencode_config::save_opencode_provider_connection,
+            opencode_config::disconnect_opencode_provider,
+            opencode_config::resolve_opencode_current_config,
+            opencode_config::preview_opencode_current_config,
             // config_store commands
             config_store::load_claude_configs,
             config_store::save_claude_configs,
@@ -66,6 +96,10 @@ pub fn run() {
             persistent_state::save_pane_width,
             persistent_state::load_config_order,
             persistent_state::save_config_order,
+            persistent_state::load_active_profile_id,
+            persistent_state::save_active_profile_id,
+            persistent_state::load_profile_ids,
+            persistent_state::save_profile_index,
             persistent_state::load_use_builtin_terminal,
             persistent_state::save_use_builtin_terminal,
             persistent_state::load_project_drop_path_mode,

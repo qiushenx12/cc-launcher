@@ -1,0 +1,53 @@
+{
+  "fixtureVersion": 1,
+  "capturedAt": "2026-07-14",
+  "kind": "codex",
+  "cliVersion": null,
+  "executableSource": "Codex desktop bundled WindowsApps resource",
+  "status": "blocked",
+  "issueCode": "version_command_failed",
+  "probes": [
+    {
+      "capability": "version",
+      "command": [
+        "codex",
+        "--version"
+      ],
+      "status": "failed",
+      "evidence": "PowerShell resolved the bundled codex.exe but process creation failed with Access is denied."
+    },
+    {
+      "capability": "working_directory",
+      "command": [
+        "codex",
+        "-C",
+        "<PROJECT_DIR>",
+        "--version"
+      ],
+      "status": "failed",
+      "evidence": "Process creation failed before -C could be evaluated."
+    },
+    {
+      "capability": "resume",
+      "command": [
+        "codex",
+        "resume",
+        "--help"
+      ],
+      "status": "failed",
+      "evidence": "Process creation failed before resume help could be read."
+    },
+    {
+      "capability": "resume_all",
+      "command": [
+        "codex",
+        "-C",
+        "<PROJECT_DIR>",
+        "resume",
+        "--help"
+      ],
+      "status": "failed",
+      "evidence": "Process creation failed, so --all support is unverified in this capture."
+    }
+  ]
+}

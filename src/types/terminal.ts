@@ -8,20 +8,24 @@ export interface TerminalTab {
   scope?: 'terminal' | 'project' | 'sidebar'
   projectSessionId?: string
   sidebarTabId?: string
+  cliKind: import('./cli').CliKind
 }
 
 export interface PtyOutput {
   tab_id: number
+  cli_kind: import('./cli').CliKind
   data: string
 }
 
 export interface PtyStatus {
   tab_id: number
+  cli_kind: import('./cli').CliKind
   alive: boolean
 }
 
 export interface PtyTitle {
   tab_id: number
+  cli_kind: import('./cli').CliKind
   title: string
   has_spinner: boolean
 }
@@ -50,6 +54,7 @@ export interface CanvasItemSnapshot {
 }
 
 export interface TerminalSnapshot {
+  cli_kind: import('./cli').CliKind
   project_path: string
   timestamp: string
   tabs: SnapshotTabEntry[]
@@ -61,6 +66,7 @@ export interface TerminalSnapshot {
 
 export interface SnapshotEntry {
   id: string
+  cli_kind: import('./cli').CliKind
   project_path: string
   timestamp: string
 }

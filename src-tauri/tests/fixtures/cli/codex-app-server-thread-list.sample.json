@@ -1,0 +1,38 @@
+{
+  "id": 1,
+  "result": {
+    "data": [
+      {
+        "id": "019f5f28-5a4d-71b2-8d69-5f7d8b2c9da1",
+        "sessionId": "019f5f28-5a4d-71b2-8d69-5f7d8b2c9da1",
+        "name": "Desktop task",
+        "preview": "Desktop task prompt",
+        "cwd": "D:\\project\\cc-launcher",
+        "createdAt": 1784007912,
+        "updatedAt": 1784011011,
+        "source": "vscode",
+        "status": { "type": "idle" },
+        "ephemeral": false,
+        "modelProvider": "openai",
+        "cliVersion": "0.144.4",
+        "turns": []
+      },
+      {
+        "id": "019f0000-0000-7000-8000-000000000001",
+        "sessionId": "019f0000-0000-7000-8000-000000000001",
+        "name": null,
+        "preview": "CLI task prompt",
+        "cwd": "D:\\project\\cc-launcher",
+        "createdAt": 1784000000,
+        "updatedAt": 1784001000,
+        "source": "cli",
+        "status": { "type": "idle" },
+        "ephemeral": false,
+        "modelProvider": "openai",
+        "cliVersion": "0.144.4",
+        "turns": []
+      }
+    ],
+    "nextCursor": null
+  }
+}
