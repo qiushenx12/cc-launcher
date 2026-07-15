@@ -1,122 +1,152 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+This file provides repository-specific guidance for coding agents working on CC Launcher.
 
 ## Project Overview
 
-`Codex-启动器` is a Windows desktop application built with **Tauri v2 + Vue 3 + Rust**. It provides a GUI for managing Codex environment configurations, AI sessions, and an embedded PTY terminal.
+CC Launcher is a Windows desktop workspace for **Claude Code**, **Codex**, and **OpenCode**. It combines CLI-specific configuration profiles, project and session discovery, embedded PTY terminals, file tools, inter-tab communication, and local orchestration features.
 
-- **Frontend**: Vue 3 (Composition API), Pinia, TypeScript, Vite
-- **Backend**: Rust, Tauri v2 commands
-- **Target platform**: Windows only (uses `winreg` and `windows` crates)
-- **Package manager**: npm
+- **Frontend:** Vue 3 Composition API, Pinia, TypeScript, Vite, xterm.js
+- **Backend:** Rust and Tauri 2 commands/events
+- **Target platform:** Windows only
+- **Package manager:** npm
+- **Application data:** `%APPDATA%\ClaudeEnvManager\`
 
-## Common Commands
+The backend depends on Windows APIs through the `winreg` and `windows` crates. Do not assume that the Rust project can compile or run on another platform.
 
-Install dependencies after checkout (not stored in version control):
+## Working Commands
 
-```bash
+Install dependencies after a fresh checkout:
+
+```powershell
 npm install
 ```
 
 Development:
 
-```bash
-# Full Tauri dev mode (starts Vite + Rust backend with hot reload)
+```powershell
+# Full Tauri application with Vite and Rust hot reload
 npm run tauri dev
 
-# Frontend-only dev server (rarely useful; Tauri dev is the normal workflow)
+# Frontend-only Vite server
 npm run dev
 ```
 
-Build:
+Build and static checks:
 
-```bash
-# Frontend-only build
+```powershell
+# TypeScript check plus frontend production build
 npm run build
 
-# Full production build (produces exe + NSIS installer under src-tauri/target/release/bundle)
+# TypeScript check only
+npx vue-tsc --noEmit
+
+# Rust compile check
+cargo check --manifest-path src-tauri/Cargo.toml
+
+# Full Windows production build and NSIS bundle
 npm run tauri build
 ```
 
-Type / compile checks:
+Tests:
 
-```bash
-# TypeScript type check
-npx vue-tsc --noEmit
+```powershell
+# Frontend terminal-output tests; requires Node.js 22 or newer
+node --test tests/codexTerminalOutput.test.ts
 
-# Rust check
-cd src-tauri && cargo check
+# Rust unit tests
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-There are no automated tests in this repository.
+There is no lint script configured.
 
 ## Architecture
 
 ### Frontend
 
-The Vue app mounts in `src/main.ts` and renders `src/App.vue`, which hosts the main tabs:
+`src/main.ts` mounts `src/App.vue`. The root component coordinates these main areas:
 
-- **配置** — Codex configuration panel (`src/components/Codex/`)
-- **项目** — Project workspace with per-project sessions, embedded terminal, and a tool sidebar (`src/components/project/`)
-- **终端** — Multi-tab PTY terminal (`src/components/terminal/`); kept mounted but switched to programmatically
-- **编排** — Orchestration manager (`src/components/orchestration/`); kept mounted but switched to programmatically
+- Shared configuration workspace for Claude Code, Codex, and OpenCode
+- CLI-specific project workspaces and session terminals
+- Standalone multi-tab terminal manager
+- Multi-agent orchestration manager
+- Global dependency and CLI capability gates
 
-State lives in Pinia stores under `src/stores/` (`Codex.ts`, `project.ts`, `terminal.ts`, `tabComm.ts`). Components communicate with the Rust backend via Tauri `invoke()` calls and receive events for terminal output.
+Important frontend directories:
+
+- `src/components/config/` - shared configuration workspace and reusable fields
+- `src/components/claude/` - Claude Code configuration and launch controls
+- `src/components/codex/` - Codex profile editor
+- `src/components/opencode/` - OpenCode provider and profile editor
+- `src/components/project/` - project tree, sessions, terminal area, and file tools
+- `src/components/terminal/` - xterm.js panes, terminal tabs, snapshots, and permissions
+- `src/components/orchestration/` - agent roles and orchestration presets
+- `src/stores/` - Pinia state for profiles, CLI runtimes, projects, terminals, and tab communication
+- `src/types/cli.ts` - shared CLI kinds, descriptors, and main-tab contracts
+
+Components call Rust with Tauri `invoke()` and receive PTY output through Tauri events. Keep privileged filesystem, process, credential, and registry operations in Rust rather than implementing them in the frontend.
 
 ### Backend
 
-Rust commands are registered in `src-tauri/src/lib.rs` under `invoke_handler`. Major modules:
+Tauri commands are registered in `src-tauri/src/lib.rs`. Major module groups are:
 
-- `config_store` — Load/save Codex config JSON
-- `settings_manager` — Load/save launch settings
-- `persistent_state` — Window size/position, pane widths, terminal font, config order
-- `project_manager` — Load/save projects, sessions, and recent items; read/save text files
-- `session_manager` — Scan Codex session history and recent projects
-- `model_fetcher` — Fetch available Codex models from API
-- `claude_launcher` — Locate and spawn Codex CLI process
-- `registry` — Windows registry environment variable writes
-- `pty` — PTY terminal sessions using `portable-pty`
-- `tab_cli` — Inter-tab communication: permissions, snapshots, presets
+- `cli_contract`, `cli_capabilities`, `cli_runtime` - shared CLI types, detection, capability validation, and native session discovery
+- `codex_config`, `opencode_config`, `config_store` - CLI profile and configuration management
+- `cli_migration`, `file_transaction` - migrations, atomic writes, verified backups, and recovery
+- `project_manager`, `session_manager` - project metadata, sessions, recent items, and text files
+- `pty/` - PTY creation, input/output, resize, title parsing, and process lifecycle
+- `tab_cli` - inter-tab commands, permissions, snapshots, and orchestration presets
+- `persistent_state`, `settings_manager` - window, pane, font, profile, and launch state
+- `registry`, `claude_launcher`, `model_fetcher` - Windows integration, Claude launch, environment application, and model discovery
 
-All JSON user data is stored under `%APPDATA%\ClaudeEnvManager\`.
+### CLI Isolation
 
-### Persistence & Data Flow
+Claude Code, Codex, and OpenCode share UI and project abstractions, but their runtime state and configuration must remain isolated by `CliKind`.
 
-- Configs and settings are persisted through dedicated Tauri commands, not direct filesystem access from the frontend.
-- The embedded terminal can launch Codex with the selected configuration; output streams back via Tauri events.
-- Window state is saved on close in **logical pixels** (`size / scaleFactor`) and restored on launch.
-- Inter-tab communication uses a custom `tab-*` command protocol routed through `tab_cli`.
+- Never infer a CLI from a display label or project name.
+- Persist and query active profiles using both CLI kind and profile ID.
+- Preserve native session identifiers without converting them into another CLI's format.
+- Run capability checks against only the selected CLI executable.
+- Unknown legacy records default to Claude Code only through the explicit migration layer.
 
-### Keyboard Shortcuts
+### Persistence and Security
 
-Defined in `src/App.vue`:
+- Persist application state through dedicated Tauri commands.
+- Preserve unknown fields when rewriting supported external configuration files.
+- Use `file_transaction` helpers for atomic writes, verified backups, and rollback.
+- Never log, serialize into diagnostics, or expose API keys and tokens to the frontend unnecessarily.
+- Codex and OpenCode managed secrets use Windows DPAPI where supported.
+- Keep migration logic idempotent and cover legacy or interrupted-write cases with fixtures.
+
+## Keyboard Shortcuts
+
+Shortcuts are defined in `src/App.vue`:
 
 | Context | Shortcut | Action |
-|---|---|---|
-| Global | `Ctrl + W` | Close current terminal tab (when terminal tab is active) |
-| Global | `Ctrl + Tab` | Switch terminal tabs (when terminal tab is active) |
-| Project | `Ctrl + T` | New project session |
-| Project | `Ctrl + W` | Close current project session terminal |
+| --- | --- | --- |
+| Terminal | `Ctrl + W` | Close the active terminal tab |
+| Terminal | `Ctrl + Tab` | Switch terminal tabs |
+| Project | `Ctrl + T` | Create a project session |
+| Project | `Ctrl + W` | Close the active project session terminal |
 | Project | `Ctrl + Tab` | Switch project sessions |
-| Project | `Ctrl + P` | Open file in sidebar |
-| Project | `Ctrl + S` | Save current file in sidebar |
-| Project | `Ctrl + Shift + B` | Toggle tool sidebar |
+| Project | `Ctrl + P` | Open a file in the sidebar |
+| Project | `Ctrl + S` | Save the active sidebar file |
+| Project | `Ctrl + Shift + B` | Toggle the tool sidebar |
 
 ## Build Outputs
 
-- Frontend build: `dist/`
-- Rust build: `src-tauri/target/`
-- Production installer: `src-tauri/target/release/bundle/nsis/`
+- Frontend bundle: `dist/`
+- Rust build artifacts: `src-tauri/target/`
+- NSIS installer: `src-tauri/target/release/bundle/nsis/`
 
-Both `dist/` and `src-tauri/target/` are ignored in SVN. `node_modules/` is also ignored; always run `npm install` after a fresh checkout.
-
-## Notes
-
-- The application bundle is configured to produce an NSIS installer (`src-tauri/tauri.conf.json`).
-- The Rust backend is Windows-specific; cross-platform compilation is not currently supported.
-- No linting or formatting scripts are configured.
+These paths and `node_modules/` are ignored by Git. Do not add generated build output or local CLI credentials to commits.
 
 ## Workflow Guidelines
 
-- After making code changes, do not launch the dev server, browser, or Tauri app for verification. Instead, perform static checks (e.g., `npx vue-tsc --noEmit`, `cargo check`) and then ask the user to test directly.
+- Preserve unrelated local changes in a dirty worktree.
+- Use `rg` or `rg --files` for repository searches when available.
+- Keep Tauri command names and frontend request/response types synchronized.
+- Add or update Rust fixtures when changing CLI contracts, migrations, or native output adapters.
+- Run checks in proportion to the change. For cross-layer work, run `npm run build`, the Node terminal-output tests when relevant, and `cargo test`.
+- Do not launch the Vite server, a browser, or the Tauri application for verification. Use static checks and automated tests, then ask the user to perform interactive validation.
+- This repository has no configured formatter or linter scripts; avoid unrelated formatting churn.
