@@ -34,8 +34,8 @@
 ## 生产产物
 
 ```text
-src-tauri/target/release/claude-launcher.exe
-src-tauri/target/release/bundle/nsis/ClaudeCode启动器_1.0.0_x64-setup.exe
+src-tauri/target/release/agents-launcher.exe
+src-tauri/target/release/bundle/nsis/Agents Launcher_1.0.0_x64-setup.exe
 ```
 
 安装包大小为 4,286,771 字节，SHA-256：

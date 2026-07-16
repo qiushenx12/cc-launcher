@@ -1,10 +1,10 @@
 # AGENTS.md
 
-This file provides repository-specific guidance for coding agents working on CC Launcher.
+This file provides repository-specific guidance for coding agents working on Agents Launcher.
 
 ## Project Overview
 
-CC Launcher is a Windows desktop workspace for **Claude Code**, **Codex**, and **OpenCode**. It combines CLI-specific configuration profiles, project and session discovery, embedded PTY terminals, file tools, inter-tab communication, and local orchestration features.
+Agents Launcher is a Windows desktop workspace for **Claude Code**, **Codex**, and **OpenCode**. It combines CLI-specific configuration profiles, project and session discovery, embedded PTY terminals, file tools, inter-tab communication, and local orchestration features.
 
 - **Frontend:** Vue 3 Composition API, Pinia, TypeScript, Vite, xterm.js
 - **Backend:** Rust and Tauri 2 commands/events

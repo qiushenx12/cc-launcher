@@ -539,7 +539,7 @@ fn protect_secret(secret: &str) -> Result<Vec<u8>, String> {
     unsafe {
         CryptProtectData(
             &input,
-            w!("Codex Launcher CodeX API Key"),
+            w!("Agents Launcher Codex API Key"),
             None,
             None,
             None,

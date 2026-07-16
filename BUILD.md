@@ -1,4 +1,4 @@
-# ClaudeCode启动器 (Tauri Edition) — 构建与运行指南
+# Agents Launcher (Tauri Edition) — 构建与运行指南
 
 ## 环境要求
 
@@ -10,7 +10,7 @@
 ## 安装依赖
 
 ```bash
-cd claude-launcher
+cd agents-launcher
 
 # 安装前端依赖
 npm install
@@ -49,19 +49,19 @@ npm run tauri build
 ### 产物位置
 
 ```
-claude-launcher/
+agents-launcher/
 └── src-tauri/
     └── target/
         └── release/
-            ├── ClaudeCode启动器.exe          ← 可执行文件（可直接运行）
+            ├── agents-launcher.exe           ← 可执行文件（可直接运行）
             └── bundle/
                 └── nsis/
-                    └── ClaudeCode启动器_1.0.0_x64-setup.exe  ← NSIS 安装包
+                    └── Agents Launcher_1.0.0_x64-setup.exe   ← NSIS 安装包
 ```
 
 | 产物 | 路径 | 说明 |
 |------|------|------|
-| 裸 exe | `src-tauri/target/release/ClaudeCode启动器.exe` | 可直接运行，但不含 WebView2 引导安装 |
+| 裸 exe | `src-tauri/target/release/agents-launcher.exe` | 可直接运行，但不含 WebView2 引导安装 |
 | NSIS 安装包 | `src-tauri/target/release/bundle/nsis/` | 推荐分发方式，含安装/卸载、开始菜单快捷方式 |
 
 ## 常用命令

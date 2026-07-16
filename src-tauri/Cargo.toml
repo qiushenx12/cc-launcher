@@ -1,12 +1,12 @@
 [package]
-name = "claude-launcher"
+name = "agents-launcher"
 version = "1.0.0"
-description = "ClaudeCode启动器 - Tauri Edition"
+description = "Agents Launcher - Tauri Edition"
 authors = ["you"]
 edition = "2021"
 
 [lib]
-name = "claude_launcher_lib"
+name = "agents_launcher_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]

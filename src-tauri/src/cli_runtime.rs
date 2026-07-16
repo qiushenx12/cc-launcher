@@ -444,7 +444,7 @@ fn exchange_codex_thread_list(
             "params": {
                 "clientInfo": {
                     "name": "cc-launcher",
-                    "title": "Codex Launcher",
+                    "title": "Agents Launcher",
                     "version": env!("CARGO_PKG_VERSION")
                 }
             }

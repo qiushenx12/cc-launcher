@@ -1,6 +1,6 @@
-# CC Launcher
+# Agents Launcher
 
-CC Launcher is a Windows desktop workspace for running and managing AI coding CLIs from one application. It provides dedicated integrations for **Claude Code**, **Codex**, and **OpenCode**, together with project-aware sessions, configuration profiles, an embedded terminal, and local orchestration tools.
+Agents Launcher is a Windows desktop workspace for running and managing AI coding CLIs from one application. It provides dedicated integrations for **Claude Code**, **Codex**, and **OpenCode**, together with project-aware sessions, configuration profiles, an embedded terminal, and local orchestration tools.
 
 The application is built with **Tauri 2**, **Vue 3**, and **Rust**. It uses the native Windows webview and a Rust PTY backend instead of bundling an Electron runtime.
 
@@ -95,7 +95,7 @@ Application-managed state is stored under:
 
 The application preserves unknown fields when updating supported configuration files and uses transactional writes for sensitive state changes. Codex and OpenCode managed secrets use Windows DPAPI where applicable, and diagnostics are designed to redact credential values.
 
-CC Launcher also reads native metadata and configuration from the installed CLIs. It does not bundle Claude Code, Codex, or OpenCode; each CLI must be installed separately for its workspace to become available.
+Agents Launcher also reads native metadata and configuration from the installed CLIs. It does not bundle Claude Code, Codex, or OpenCode; each CLI must be installed separately for its workspace to become available.
 
 ## Development
 

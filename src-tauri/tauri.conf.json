@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui/tauri-v2-schema/main/tauri.conf.json",
-  "productName": "ClaudeCode启动器",
+  "productName": "Agents Launcher",
   "version": "1.0.0",
-  "identifier": "com.claudelauncher.app",
+  "identifier": "com.agentslauncher.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "ClaudeCode启动器",
+        "title": "Agents Launcher",
         "width": 1200,
         "height": 800,
         "minWidth": 900,
@@ -37,6 +37,7 @@
       "timestampUrl": "",
       "nsis": {
         "displayLanguageSelector": false,
+        "installerIcon": "icons/app.ico",
         "languages": ["SimpChinese"],
         "installMode": "currentUser"
       }
