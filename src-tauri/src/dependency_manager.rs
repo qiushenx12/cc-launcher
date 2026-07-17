@@ -232,6 +232,7 @@ fn run_winget_install(
     })
 }
 
+#[allow(unused_mut)]
 fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
     #[cfg(windows)]

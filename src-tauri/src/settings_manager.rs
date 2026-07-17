@@ -245,7 +245,7 @@ pub fn save_claude_env(env: HashMap<String, String>) -> Result<(), String> {
             .map_err(|e| format!("读取 settings.json 失败: {}", e))?;
         serde_json::from_str::<Value>(&raw)
             .ok()
-            .and_then(|v| v.into_object())
+            .and_then(|v| v.as_object().cloned())
             .unwrap_or_default()
     } else {
         Map::new()

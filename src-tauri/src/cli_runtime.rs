@@ -78,6 +78,7 @@ struct CodexThreadListResponse {
     data: Vec<CodexThreadSummary>,
 }
 
+#[allow(unused_mut)]
 fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
     #[cfg(windows)]

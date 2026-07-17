@@ -1399,6 +1399,7 @@ fn enrich_profiles(state: &mut OpencodeProfileState) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(unused_mut)]
 fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
     #[cfg(windows)]

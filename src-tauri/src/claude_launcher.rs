@@ -131,6 +131,7 @@ fn inspect_claude_code() -> ClaudeCodeCheckResult {
     }
 }
 
+#[allow(unused_mut)]
 fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
     #[cfg(windows)]

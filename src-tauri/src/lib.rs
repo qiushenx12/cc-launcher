@@ -41,6 +41,10 @@ mod window_theme {
             let hwnd = windows::Win32::Foundation::HWND(window.hwnd().unwrap().0 as _);
             set_titlebar_dark_mode(hwnd, dark);
         }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (window, dark);
+        }
     }
 }
 
