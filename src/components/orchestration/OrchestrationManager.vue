@@ -11,6 +11,7 @@ import AgentRoleModal from './AgentRoleModal.vue'
 import SnapshotManager from '../terminal/SnapshotManager.vue'
 import PresetManager from './PresetManager.vue'
 import ToastNotification from '@/components/common/ToastNotification.vue'
+import { getDefaultShell } from '@/composables/useDefaultShell'
 
 const store = useTerminalStore()
 const tabComm = useTabCommStore()
@@ -497,7 +498,7 @@ async function saveCurrentAsPreset(name: string, description: string) {
       role: role || { name: '未命名角色', description: '', systemPrompt: '' },
       launchConfig: {
         agentType: 'terminal' as const,
-        cmd: ['cmd.exe'],
+        cmd: getDefaultShell(),
         env: {},
         cwd: null,
       },

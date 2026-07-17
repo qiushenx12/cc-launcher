@@ -11,9 +11,17 @@ export interface DropOptions {
   onLeave?: () => void
 }
 
-function toLogical(position: { x: number; y: number }): DropPosition {
-  const scale = window.devicePixelRatio || 1
-  return { x: position.x / scale, y: position.y / scale }
+function extractFilePaths(event: DragEvent): string[] {
+  const files = event.dataTransfer?.files
+  if (!files || files.length === 0) return []
+  const paths: string[] = []
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i] as File & { path?: string }
+    if (f.path) {
+      paths.push(f.path)
+    }
+  }
+  return paths
 }
 
 export function useTauriDrop(
@@ -21,27 +29,64 @@ export function useTauriDrop(
   options?: DropOptions,
 ) {
   let unlisten: (() => void) | null = null
+  let nativeCleanup: (() => void) | null = null
 
   onMounted(async () => {
-    const win = getCurrentWebviewWindow()
-    unlisten = await win.onDragDropEvent((event) => {
-      const payload = event.payload
-      if (payload.type === 'drop' && payload.paths.length > 0) {
-        callback(payload.paths, toLogical(payload.position))
-        return
+    // Browser-native drop (primary; works on all platforms)
+    const onDragOver = (e: DragEvent) => {
+      e.preventDefault()
+      options?.onOver?.({ x: e.clientX, y: e.clientY })
+    }
+    const onDragLeave = () => {
+      options?.onLeave?.()
+    }
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault()
+      const paths = extractFilePaths(e)
+      if (paths.length > 0) {
+        callback(paths, { x: e.clientX, y: e.clientY })
       }
-      if (payload.type === 'over') {
-        options?.onOver?.(toLogical(payload.position))
-        return
-      }
-      if (payload.type === 'leave') {
-        options?.onLeave?.()
-      }
-    })
+    }
+    document.addEventListener('dragover', onDragOver)
+    document.addEventListener('dragleave', onDragLeave)
+    document.addEventListener('drop', onDrop)
+    nativeCleanup = () => {
+      document.removeEventListener('dragover', onDragOver)
+      document.removeEventListener('dragleave', onDragLeave)
+      document.removeEventListener('drop', onDrop)
+    }
+
+    // Tauri v2 native event as fallback
+    try {
+      const win = getCurrentWebviewWindow()
+      unlisten = await win.onDragDropEvent((event) => {
+        const payload = event.payload
+        if (payload.type === 'leave') {
+          options?.onLeave?.()
+          return
+        }
+        if (payload.type === 'over') {
+          options?.onOver?.({
+            x: payload.position.x,
+            y: payload.position.y,
+          })
+          return
+        }
+        if (payload.type === 'drop' && payload.paths.length > 0) {
+          callback(payload.paths, {
+            x: payload.position.x,
+            y: payload.position.y,
+          })
+        }
+      })
+    } catch {
+      // onDragDropEvent not available
+    }
   })
 
   onBeforeUnmount(() => {
     unlisten?.()
+    nativeCleanup?.()
   })
 }
 

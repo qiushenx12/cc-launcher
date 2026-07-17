@@ -112,8 +112,8 @@
 
     <hr class="separator" style="margin: 12px 0 10px;" />
 
-    <!-- Scope radio -->
-    <div class="scope-row">
+    <!-- Scope radio: Windows only -->
+    <div v-if="isWindows" class="scope-row">
       <span class="scope-label">应用范围</span>
       <label class="radio-label">
         <input type="radio" v-model="store.scope" value="user" />
@@ -160,12 +160,14 @@ import { computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useClaudeStore } from '@/stores/claude'
 import { useConfigWorkspaceStore } from '@/stores/configWorkspace'
+import { usePlatform } from '@/composables/usePlatform'
 import SecretField from '@/components/config/SecretField.vue'
 import ConfigStatusBanner from '@/components/config/ConfigStatusBanner.vue'
 import ModelField from '@/components/config/ModelField.vue'
 
 const store = useClaudeStore()
 const workspaceStore = useConfigWorkspaceStore()
+const { isWindows } = usePlatform()
 
 // Convenience proxy so templates can use vars.ANTHROPIC_MODEL etc.
 const vars = computed(() => store.editingConfig.vars)

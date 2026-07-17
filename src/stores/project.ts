@@ -9,6 +9,7 @@ import { useTerminalStore } from './terminal'
 import type { CliProfileRef, SessionEntry } from '@/types/config'
 import { CLI_DESCRIPTORS, type CliKind } from '@/types/cli'
 import { useCliRuntimeStore } from './cliRuntime'
+import { getDefaultShell } from '@/composables/useDefaultShell'
 
 export type TerminalStatus = 'off' | 'idle' | 'running'
 export type SidebarTabType = 'tools' | 'file' | 'terminal' | 'browser'
@@ -747,7 +748,7 @@ export const useProjectStore = defineStore('project', () => {
     }
     const paths = discovery.projects
       .map((entry) => entry.worktree)
-      .filter((path) => path && path !== '/' && /^[a-zA-Z]:[\\/]/.test(path))
+      .filter((path) => path && path !== '/' && (path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path)))
     return mergeRecentProjectPaths(paths, { prepend: true, cliKind: 'opencode' })
   }
 
@@ -1469,7 +1470,7 @@ export const useProjectStore = defineStore('project', () => {
     if (!tab || tab.terminalId) return
     const project = activeProject.value
     const terminalId = await useTerminalStore().createTab(
-      ['cmd.exe'],
+      getDefaultShell(),
       {},
       project?.path ?? null,
       tab.title,

@@ -5,6 +5,7 @@ import { useDragReorder } from '@/composables/useDragReorder'
 import TerminalPane from './TerminalPane.vue'
 import TerminalTab from './TerminalTab.vue'
 import ToastNotification from '@/components/common/ToastNotification.vue'
+import { getDefaultShell } from '@/composables/useDefaultShell'
 
 const props = defineProps<{
   /** Optional working directory for new terminals */
@@ -29,7 +30,7 @@ onMounted(async () => {
 
 async function newTerminal() {
   const cwd = props.launchDir ?? null
-  await store.createTab(['cmd.exe'], {}, cwd)
+  await store.createTab(getDefaultShell(), {}, cwd)
 }
 
 async function saveFontSize() {

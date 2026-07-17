@@ -135,14 +135,14 @@ function basename(path: string): string {
 }
 
 function normalizeSeparators(path: string): string {
-  return path.replace(/[\\/]+$/, '').replace(/\//g, '\\')
+  return path.replace(/[\\/]+$/, '').replace(/\\/g, '/')
 }
 
 function isUnderProject(path: string, projectPath: string): boolean {
   const normalizedPath = normalizeSeparators(path).toLowerCase()
   const normalizedProject = normalizeSeparators(projectPath).toLowerCase()
   return normalizedPath === normalizedProject
-    || normalizedPath.startsWith(normalizedProject + '\\')
+    || normalizedPath.startsWith(normalizedProject + '/')
 }
 
 function relativeToProject(path: string, projectPath: string): string {
