@@ -74,15 +74,23 @@ pub async fn check_git_dependency() -> DependencyCheckResult {
 pub async fn install_dependency_via_winget(
     dependency: String,
 ) -> Result<DependencyInstallResult, String> {
-    let (package_id, display_name) = match dependency.as_str() {
-        "node" => ("OpenJS.NodeJS.LTS", "Node.js LTS"),
-        "git" => ("Git.Git", "Git"),
-        _ => return Err("不支持安装此依赖。".to_string()),
-    };
+    #[cfg(windows)]
+    {
+        let (package_id, display_name) = match dependency.as_str() {
+            "node" => ("OpenJS.NodeJS.LTS", "Node.js LTS"),
+            "git" => ("Git.Git", "Git"),
+            _ => return Err("不支持安装此依赖。".to_string()),
+        };
 
-    tokio::task::spawn_blocking(move || run_winget_install(&dependency, package_id, display_name))
-        .await
-        .map_err(|error| format!("安装任务异常结束: {error}"))?
+        tokio::task::spawn_blocking(move || run_winget_install(&dependency, package_id, display_name))
+            .await
+            .map_err(|error| format!("安装任务异常结束: {error}"))?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = dependency;
+        Err("依赖安装仅支持 Windows（winget）。macOS 请使用 Homebrew 或官网安装。".to_string())
+    }
 }
 
 async fn check_dependency(kind: DependencyKind) -> DependencyCheckResult {
@@ -180,6 +188,7 @@ fn inspect_dependency(kind: DependencyKind) -> DependencyCheckResult {
     }
 }
 
+#[cfg(windows)]
 fn run_winget_install(
     dependency: &str,
     package_id: &str,
@@ -244,6 +253,7 @@ fn parse_node_major_version(version: &str) -> Option<u64> {
         .ok()
 }
 
+#[cfg(windows)]
 fn winget_error_message(stdout: &[u8], stderr: &[u8]) -> String {
     let output = if stderr.is_empty() { stdout } else { stderr };
     let message = String::from_utf8_lossy(output)
