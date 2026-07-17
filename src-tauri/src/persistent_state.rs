@@ -1,6 +1,6 @@
 //! persistent_state.rs
 //!
-//! Manages all UI state in a single file: %APPDATA%\ClaudeEnvManager\app_state.json
+//! Manages all UI state in a single file: {data_dir}/ClaudeEnvManager/app_state.json
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -19,7 +19,7 @@ use crate::file_transaction::{restore_json_backup_if_missing, write_json_atomic}
 fn app_data_dir() -> Result<PathBuf, String> {
     dirs::data_dir()
         .map(|d| d.join("ClaudeEnvManager"))
-        .ok_or_else(|| "Could not determine %APPDATA% directory".to_string())
+        .ok_or_else(|| "Could not determine application data directory".to_string())
 }
 
 fn app_state_path() -> Result<PathBuf, String> {

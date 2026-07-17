@@ -2,7 +2,7 @@
 //!
 //! Reads and writes named config profiles as JSON.
 //!
-//! Claude configs:  %APPDATA%\ClaudeEnvManager\env_configs.json
+//! Claude configs:  {data_dir}/ClaudeEnvManager/env_configs.json
 //!
 //! Format: { "config_name": { "VAR_NAME": "value", ... } }
 
@@ -21,7 +21,7 @@ use crate::file_transaction::{restore_json_backup_if_missing, write_json_atomic}
 fn app_data_dir() -> Result<PathBuf, String> {
     dirs::data_dir()
         .map(|d| d.join("ClaudeEnvManager"))
-        .ok_or_else(|| "Could not determine %APPDATA% directory".to_string())
+        .ok_or_else(|| "Could not determine application data directory".to_string())
 }
 
 fn claude_config_path() -> Result<PathBuf, String> {

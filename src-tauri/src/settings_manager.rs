@@ -1,14 +1,16 @@
 //! settings_manager.rs
 //!
-//! Reads and writes %USERPROFILE%\.claude\settings.json.
+//! Reads and writes {home}/.claude/settings.json.
 //!
 //! Managed fields:
 //!   - `skipDangerousModePermissionPrompt`: bool
 //!   - `permissions.defaultMode`: "bypassPermissions" | "default"
 //!   - `awaySummaryEnabled`: bool
+//!   - `env`: { "VAR_NAME": "value", ... }
 //!
 //! All other fields in the file are preserved on write.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -29,7 +31,7 @@ struct SettingsPaths {
 fn settings_paths() -> Result<SettingsPaths, String> {
     let directory = dirs::home_dir()
         .map(|home| home.join(".claude"))
-        .ok_or_else(|| "Could not determine %USERPROFILE% directory".to_string())?;
+        .ok_or_else(|| "Could not determine home directory".to_string())?;
     Ok(SettingsPaths {
         canonical: directory.join("settings.json"),
         legacy: [directory.join("claude.json"), directory.join("config.json")],
@@ -206,6 +208,63 @@ fn save_claude_settings_to(paths: &SettingsPaths, settings: &ClaudeSettings) -> 
         json.as_bytes(),
         "Claude Code settings.json",
     )
+}
+
+/// 读取 settings.json 中的 env 字段（忽略空值）。
+#[tauri::command]
+pub fn load_claude_env() -> Result<HashMap<String, String>, String> {
+    let paths = settings_paths()?;
+    let path = &paths.canonical;
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("读取 settings.json 失败: {}", e))?;
+    let json: Value = serde_json::from_str(&raw).unwrap_or(Value::Object(Map::new()));
+    let mut result = HashMap::new();
+    if let Some(env_obj) = json.get("env").and_then(|v| v.as_object()) {
+        for (k, v) in env_obj {
+            if let Some(s) = v.as_str() {
+                if !s.is_empty() {
+                    result.insert(k.clone(), s.to_string());
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// 写入 settings.json 中的 env 字段（覆盖整个 env 对象，保留其他字段）。
+/// 空值会被过滤掉，避免覆盖 shell 中已设置的环境变量。
+#[tauri::command]
+pub fn save_claude_env(env: HashMap<String, String>) -> Result<(), String> {
+    let paths = settings_paths()?;
+    let path = &paths.canonical;
+    let mut obj: Map<String, Value> = if path.exists() {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| format!("读取 settings.json 失败: {}", e))?;
+        serde_json::from_str::<Value>(&raw)
+            .ok()
+            .and_then(|v| v.into_object())
+            .unwrap_or_default()
+    } else {
+        Map::new()
+    };
+    let env_map: Map<String, Value> = env
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| (k, Value::String(v)))
+        .collect();
+    obj.insert("env".to_string(), Value::Object(env_map));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+    let json = serde_json::to_string_pretty(&Value::Object(obj))
+        .map_err(|e| format!("序列化 settings.json 失败: {}", e))?;
+    std::fs::write(path, json.as_bytes())
+        .map_err(|e| format!("写入 settings.json 失败: {}", e))?;
+    Ok(())
 }
 
 #[cfg(test)]

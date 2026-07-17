@@ -86,6 +86,8 @@ pub fn run() {
             // settings_manager commands
             settings_manager::load_claude_settings,
             settings_manager::save_claude_settings,
+            settings_manager::load_claude_env,
+            settings_manager::save_claude_env,
             // persistent_state commands
             persistent_state::load_window_state,
             persistent_state::save_window_state,
