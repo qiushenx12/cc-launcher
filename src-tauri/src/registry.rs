@@ -60,11 +60,6 @@ fn broadcast_env_change() {
     });
 }
 
-#[cfg(not(windows))]
-fn broadcast_env_change() {
-    // No-op on non-Windows platforms.
-}
-
 // ---------------------------------------------------------------------------
 // Windows implementation used by env_applier::apply_env_vars
 // ---------------------------------------------------------------------------

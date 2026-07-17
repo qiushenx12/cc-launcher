@@ -177,6 +177,7 @@ fn npm_error_message(stdout: &[u8], stderr: &[u8]) -> String {
     }
 }
 
+#[cfg(windows)]
 fn expand_env(template: &str) -> String {
     let mut result = template.to_string();
     for (key, val) in std::env::vars() {
@@ -185,6 +186,7 @@ fn expand_env(template: &str) -> String {
     result
 }
 
+#[cfg(windows)]
 fn expand_home(template: &str) -> String {
     if let Some(home) = dirs::home_dir() {
         let home_str = home.to_string_lossy().to_string();
