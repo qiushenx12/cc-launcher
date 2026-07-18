@@ -14,7 +14,9 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::cli_contract::CliKind;
-use crate::file_transaction::{restore_json_backup_if_missing, write_json_atomic};
+use crate::file_transaction::{
+    restore_json_backup_if_missing, write_json_atomic, write_private_json_atomic,
+};
 use crate::persistent_state::{
     load_profile_index_state, save_profile_index_state, ProfileIndexState,
 };
@@ -23,6 +25,8 @@ use crate::{cli_runtime, model_fetcher};
 const STATE_VERSION: u32 = 1;
 const STATE_KEY: &str = "opencode";
 const SCHEMA_URL: &str = "https://opencode.ai/config.json";
+#[cfg(target_os = "macos")]
+const WRITABLE_TEST_PATH: &str = "/bin/test";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -306,6 +310,15 @@ pub struct OpencodeConnectionStatusPayload {
     pub connection_keys: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpencodePermissionStatus {
+    pub supported: bool,
+    pub requires_repair: bool,
+    pub directories: Vec<String>,
+    pub blocked_directories: Vec<String>,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -389,6 +402,182 @@ fn model_state_path() -> Result<PathBuf, String> {
         .join("state")
         .join("opencode")
         .join("model.json"))
+}
+
+fn opencode_permission_directories(home: &Path) -> Vec<PathBuf> {
+    vec![
+        home.join(".config").join("opencode"),
+        home.join(".local").join("share").join("opencode"),
+        home.join(".local").join("state").join("opencode"),
+    ]
+}
+
+#[cfg(target_os = "macos")]
+fn nearest_existing_ancestor(path: &Path) -> Option<&Path> {
+    let mut current = Some(path);
+    while let Some(candidate) = current {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        current = candidate.parent();
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn path_is_writable(path: &Path) -> bool {
+    Command::new(WRITABLE_TEST_PATH)
+        .arg("-w")
+        .arg(path)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(target_os = "macos")]
+fn opencode_permission_status_impl() -> Result<OpencodePermissionStatus, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let home = home_dir()?;
+    let current_uid = fs::metadata(&home)
+        .map_err(|error| format!("无法读取用户主目录权限：{error}"))?
+        .uid();
+    let directories = opencode_permission_directories(&home);
+    let mut blocked = Vec::new();
+
+    for directory in &directories {
+        let needs_repair = if directory.exists() {
+            let link_metadata = fs::symlink_metadata(directory)
+                .map_err(|error| format!("无法读取 OpenCode 目录权限：{error}"))?;
+            if link_metadata.file_type().is_symlink() || !link_metadata.is_dir() {
+                true
+            } else {
+                link_metadata.uid() != current_uid || !path_is_writable(directory)
+            }
+        } else {
+            nearest_existing_ancestor(directory)
+                .is_none_or(|ancestor| !ancestor.is_dir() || !path_is_writable(ancestor))
+        };
+        if needs_repair {
+            blocked.push(directory.display().to_string());
+        }
+    }
+
+    Ok(OpencodePermissionStatus {
+        supported: true,
+        requires_repair: !blocked.is_empty(),
+        directories: directories
+            .into_iter()
+            .map(|path| path.display().to_string())
+            .collect(),
+        blocked_directories: blocked,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(target_os = "macos")]
+fn applescript_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('\"', "\\\""))
+}
+
+#[cfg(target_os = "macos")]
+fn opencode_permission_repair_command(directories: &[PathBuf], owner: &str) -> String {
+    let quoted_paths = directories
+        .iter()
+        .map(|path| shell_quote(&path.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "/bin/mkdir -p {quoted_paths} && /usr/sbin/chown -R -P {owner} {quoted_paths} && /bin/chmod 700 {quoted_paths}"
+    )
+}
+
+#[tauri::command]
+pub fn check_opencode_permissions() -> Result<OpencodePermissionStatus, String> {
+    #[cfg(target_os = "macos")]
+    {
+        opencode_permission_status_impl()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(OpencodePermissionStatus {
+            supported: false,
+            requires_repair: false,
+            directories: Vec::new(),
+            blocked_directories: Vec::new(),
+        })
+    }
+}
+
+#[tauri::command]
+pub async fn repair_opencode_permissions() -> Result<OpencodePermissionStatus, String> {
+    #[cfg(target_os = "macos")]
+    {
+        return tokio::task::spawn_blocking(|| {
+            use std::os::unix::fs::MetadataExt;
+
+            let current_status = opencode_permission_status_impl()?;
+            if !current_status.requires_repair {
+                return Ok(current_status);
+            }
+            let home = home_dir()?;
+            let home_metadata =
+                fs::metadata(&home).map_err(|error| format!("无法读取用户主目录权限：{error}"))?;
+            let owner = format!("{}:{}", home_metadata.uid(), home_metadata.gid());
+            let directories = opencode_permission_directories(&home);
+
+            for directory in &directories {
+                if directory.exists() {
+                    let metadata = fs::symlink_metadata(directory)
+                        .map_err(|error| format!("无法检查 OpenCode 目录：{error}"))?;
+                    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                        return Err(format!(
+                            "拒绝自动修复非普通目录：{}。请先手动检查该路径。",
+                            directory.display()
+                        ));
+                    }
+                }
+            }
+
+            let shell_command = opencode_permission_repair_command(&directories, &owner);
+            let apple_script = format!(
+                "do shell script {} with administrator privileges",
+                applescript_string(&shell_command)
+            );
+            let output = Command::new("/usr/bin/osascript")
+                .args(["-e", &apple_script])
+                .output()
+                .map_err(|error| format!("无法打开 macOS 管理员授权：{error}"))?;
+            if !output.status.success() {
+                let detail = String::from_utf8_lossy(&output.stderr);
+                if detail.contains("-128") || detail.to_ascii_lowercase().contains("canceled") {
+                    return Err("已取消 macOS 管理员授权，目录权限未修改".to_string());
+                }
+                return Err(format!(
+                    "macOS 管理员授权未完成：{}",
+                    detail.trim().replace('\n', " ")
+                ));
+            }
+
+            let status = opencode_permission_status_impl()?;
+            if status.requires_repair {
+                return Err(format!(
+                    "授权完成，但以下目录仍不可写：{}",
+                    status.blocked_directories.join("、")
+                ));
+            }
+            Ok(status)
+        })
+        .await
+        .map_err(|error| format!("OpenCode 权限修复任务异常结束：{error}"))?;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    Err("一键修复 OpenCode 目录权限仅支持 macOS".to_string())
 }
 
 fn valid_stable_id(value: &str) -> bool {
@@ -1187,6 +1376,43 @@ fn build_global_config(
     Ok(format!("{rendered}\n"))
 }
 
+fn has_plaintext_api_key(value: &Value) -> bool {
+    value
+        .get("provider")
+        .and_then(Value::as_object)
+        .is_some_and(|providers| {
+            providers.values().any(|provider| {
+                provider
+                    .get("options")
+                    .and_then(|options| options.get("apiKey"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .is_some_and(|key| {
+                        !key.is_empty()
+                            && !(key.starts_with("{env:") && key.ends_with('}'))
+                            && !(key.starts_with("{file:") && key.ends_with('}'))
+                    })
+            })
+        })
+}
+
+fn write_global_config_atomic(path: &Path, content: &[u8]) -> Result<(), String> {
+    let value: Value = serde_json::from_slice(content)
+        .map_err(|error| format!("OpenCode 全局配置不是有效 JSON：{error}"))?;
+    // The backup contains the old document, so it must stay private even when
+    // this write is the one that removes the last plaintext key.
+    let existing_has_plaintext_api_key = match fs::read_to_string(path) {
+        Ok(raw) => has_plaintext_api_key(&parse_jsonc(&raw, "现有 OpenCode 全局配置")?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(format!("无法读取现有 OpenCode 全局配置：{error}")),
+    };
+    if has_plaintext_api_key(&value) || existing_has_plaintext_api_key {
+        write_private_json_atomic(path, content, "OpenCode 全局配置")
+    } else {
+        write_json_atomic(path, content, "OpenCode 全局配置")
+    }
+}
+
 #[tauri::command]
 pub fn load_opencode_global_config() -> Result<OpencodeGlobalConfigPayload, String> {
     let (path, raw, value) = read_global_config_document()?;
@@ -1203,7 +1429,7 @@ pub fn save_opencode_global_config(
         return Err("opencode.jsonc 已被其它程序修改，请先刷新后再保存".to_string());
     }
     let rendered = build_global_config(value, &config)?;
-    write_json_atomic(&path, rendered.as_bytes(), "OpenCode 全局配置")?;
+    write_global_config_atomic(&path, rendered.as_bytes())?;
     load_opencode_global_config()
 }
 
@@ -1244,7 +1470,7 @@ pub fn save_opencode_provider_connection(
     set_provider_disabled(&mut config, provider_id, false)?;
     let rendered = serde_json::to_vec_pretty(&config)
         .map_err(|error| format!("无法生成 OpenCode 全局配置：{error}"))?;
-    write_json_atomic(&config_path, &rendered, "OpenCode 全局配置")?;
+    write_global_config_atomic(&config_path, &rendered)?;
     load_connection_status()
 }
 
@@ -1276,7 +1502,7 @@ pub fn save_opencode_provider_key(
     set_api_credential(&mut auth, provider_id, api_key)?;
     let rendered = serde_json::to_vec_pretty(&auth)
         .map_err(|error| format!("无法生成 OpenCode 连接配置：{error}"))?;
-    write_json_atomic(&auth_path, &rendered, "OpenCode 连接 Key")?;
+    write_private_json_atomic(&auth_path, &rendered, "OpenCode 连接 Key")?;
     load_connection_status()
 }
 
@@ -1304,7 +1530,7 @@ pub fn disconnect_opencode_provider(
     set_provider_disabled(&mut config, provider_id, true)?;
     let rendered = serde_json::to_vec_pretty(&config)
         .map_err(|error| format!("无法生成 OpenCode 全局配置：{error}"))?;
-    write_json_atomic(&config_path, &rendered, "OpenCode 全局配置")?;
+    write_global_config_atomic(&config_path, &rendered)?;
     load_connection_status()
 }
 
@@ -1402,6 +1628,7 @@ fn enrich_profiles(state: &mut OpencodeProfileState) -> Result<(), String> {
 #[allow(unused_mut)]
 fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
+    crate::platform_env::apply_effective_path(&mut command);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -2283,6 +2510,83 @@ pub fn preview_opencode_current_config(project_path: Option<String>) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_targets_are_limited_to_opencode_directories() {
+        let home = Path::new("/Users/Test User");
+        assert_eq!(
+            opencode_permission_directories(home),
+            vec![
+                home.join(".config/opencode"),
+                home.join(".local/share/opencode"),
+                home.join(".local/state/opencode"),
+            ]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn permission_repair_command_quotes_paths_and_never_targets_the_home_directory() {
+        let home = Path::new("/Users/O'Neil Test");
+        let directories = opencode_permission_directories(home);
+        let command = opencode_permission_repair_command(&directories, "501:20");
+
+        assert!(command.contains("'/Users/O'\\''Neil Test/.config/opencode'"));
+        assert!(command.contains("/usr/sbin/chown -R -P 501:20"));
+        assert!(!command.contains("501:20 '/Users/O'\\''Neil Test' "));
+        assert!(applescript_string(&command).starts_with('"'));
+        assert!(Path::new(WRITABLE_TEST_PATH).is_file());
+    }
+
+    #[test]
+    fn plaintext_api_keys_are_distinguished_from_opencode_references() {
+        let plaintext = json!({
+            "provider": { "proxy": { "options": { "apiKey": "sk-private" } } }
+        });
+        let environment = json!({
+            "provider": { "proxy": { "options": { "apiKey": "{env:PROXY_KEY}" } } }
+        });
+        let file = json!({
+            "provider": { "proxy": { "options": { "apiKey": "{file:~/.secret}" } } }
+        });
+        assert!(has_plaintext_api_key(&plaintext));
+        assert!(!has_plaintext_api_key(&environment));
+        assert!(!has_plaintext_api_key(&file));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removing_plaintext_key_keeps_the_secret_backup_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "agents-launcher-opencode-private-{}",
+            Uuid::new_v4()
+        ));
+        let path = root.join("opencode.jsonc");
+        fs::create_dir_all(&root).expect("create temp directory");
+        fs::write(
+            &path,
+            r#"{
+                // Existing JSONC may contain comments.
+                "provider": { "proxy": { "options": { "apiKey": "sk-private" } } }
+            }"#,
+        )
+        .expect("write existing config");
+
+        write_global_config_atomic(&path, br#"{"provider":{}}"#).expect("remove plaintext key");
+
+        let backup = path.with_extension("jsonc.bak");
+        assert_eq!(
+            fs::metadata(backup)
+                .expect("backup metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 
     fn provider(id: &str, model: &str) -> OpencodeProvider {
         OpencodeProvider {

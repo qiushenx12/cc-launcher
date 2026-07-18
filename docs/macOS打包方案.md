@@ -132,6 +132,10 @@ npm run tauri dev
 
 ## macOS 生产构建
 
+Finder 中可以直接双击仓库根目录的 `build-macos.command`。脚本会检查 Node.js、Rust、Xcode Command Line Tools 和当前 Mac 对应的 Rust 目标，首次构建时安装 npm 依赖，成功后自动打开 `.app` 与 `.dmg` 的产物目录；构建失败时会保留终端窗口并显示真实错误。
+
+也可以在终端中手动执行：
+
 ```bash
 # Apple Silicon
 npm run tauri build -- --target aarch64-apple-darwin --bundles app,dmg

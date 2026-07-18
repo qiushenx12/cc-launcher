@@ -7,14 +7,18 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use toml_edit::{value, DocumentMut, Item, Table};
+#[cfg(target_os = "macos")]
+use toml_edit::{Array, Value as TomlValue};
 use url::Url;
 use uuid::Uuid;
 
 use crate::file_transaction::{restore_json_backup_if_missing, write_json_atomic};
+use crate::model_fetcher;
 use crate::persistent_state::{
     load_profile_index_state, save_profile_index_state, ProfileIndexState,
 };
-use crate::{env_applier, model_fetcher, registry};
+#[cfg(windows)]
+use crate::{env_applier, registry};
 
 const CODEX_STATE_VERSION: u32 = 1;
 const CODEX_STATE_KEY: &str = "codex";
@@ -113,11 +117,16 @@ pub struct CodexProfilesPayload {
     pub order: Vec<String>,
     pub active_profile_id: Option<String>,
     pub global_profile_id: Option<String>,
+    pub global_profile_in_sync: bool,
     pub profiles_path: String,
     pub global_config_path: String,
     pub auth_path: String,
     pub global_config_error: Option<String>,
     pub auth_status: CodexAuthStatus,
+    pub custom_global_sync_supported: bool,
+    pub custom_global_key_sync_supported: bool,
+    pub secret_storage_kind: &'static str,
+    pub platform: &'static str,
 }
 
 #[derive(Clone, Deserialize)]
@@ -193,6 +202,7 @@ fn profiles_path() -> Result<PathBuf, String> {
     Ok(codex_data_dir()?.join("profiles.json"))
 }
 
+#[cfg(windows)]
 fn credentials_dir() -> Result<PathBuf, String> {
     Ok(codex_data_dir()?.join("credentials"))
 }
@@ -231,8 +241,34 @@ fn managed_profile_path(profile_id: &str) -> Result<PathBuf, String> {
     Ok(codex_home()?.join(format!("{}.config.toml", managed_profile_name(profile_id))))
 }
 
+#[cfg(windows)]
 fn credential_path(profile_id: &str) -> Result<PathBuf, String> {
     Ok(credentials_dir()?.join(format!("{profile_id}.bin")))
+}
+
+fn custom_global_sync_supported() -> bool {
+    cfg!(any(windows, target_os = "macos"))
+}
+
+fn custom_global_key_sync_supported() -> bool {
+    cfg!(windows)
+}
+
+fn secret_storage_kind() -> &'static str {
+    #[cfg(windows)]
+    {
+        return "windows_dpapi";
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return "macos_keychain";
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    "unsupported"
+}
+
+fn platform_name() -> &'static str {
+    std::env::consts::OS
 }
 
 fn load_profile_state() -> Result<CodexProfileState, String> {
@@ -348,6 +384,40 @@ fn remove_provider(document: &mut DocumentMut, provider_id: &str) {
     }
 }
 
+fn uses_keychain_command_auth(profile: &CodexProfile) -> bool {
+    cfg!(target_os = "macos")
+        && profile.auth_mode == CodexAuthMode::Custom
+        && profile.has_stored_api_key
+}
+
+fn configure_provider_credentials(provider: &mut Table, profile: &CodexProfile) {
+    #[cfg(target_os = "macos")]
+    if uses_keychain_command_auth(profile) {
+        provider.remove("env_key");
+        let mut args = Array::new();
+        for argument in [
+            "find-generic-password",
+            "-s",
+            crate::macos_keychain::SERVICE,
+            "-a",
+            profile.id.as_str(),
+            "-w",
+        ] {
+            args.push(argument);
+        }
+        let mut auth = Table::new();
+        auth["command"] = value("/usr/bin/security");
+        auth["args"] = Item::Value(TomlValue::Array(args));
+        auth["timeout_ms"] = value(10_000_i64);
+        auth["refresh_interval_ms"] = value(0_i64);
+        provider["auth"] = Item::Table(auth);
+        return;
+    }
+
+    provider["env_key"] = value(&profile.env_key);
+    provider.remove("auth");
+}
+
 fn build_profile_toml(
     existing: Option<&str>,
     previous_managed_provider_id: Option<&str>,
@@ -397,7 +467,7 @@ fn build_profile_toml(
             provider["name"] = value(&profile.provider_name);
             provider["base_url"] = value(&profile.base_url);
             provider["wire_api"] = value("responses");
-            provider["env_key"] = value(&profile.env_key);
+            configure_provider_credentials(provider, profile);
             provider.remove("requires_openai_auth");
             provider.remove("experimental_bearer_token");
         }
@@ -407,6 +477,14 @@ fn build_profile_toml(
     DocumentMut::from_str(&rendered)
         .map_err(|error| format!("生成的 CodeX profile TOML 校验失败：{error}"))?;
     Ok(rendered)
+}
+
+fn build_global_toml(
+    existing: Option<&str>,
+    previous_managed_provider_id: Option<&str>,
+    profile: &CodexProfile,
+) -> Result<String, String> {
+    build_profile_toml(existing, previous_managed_provider_id, profile)
 }
 
 fn managed_provider_id(profile: &CodexProfile) -> Option<&str> {
@@ -583,28 +661,163 @@ fn unprotect_secret(encrypted: &[u8]) -> Result<String, String> {
 }
 
 #[cfg(not(windows))]
-fn protect_secret(_secret: &str) -> Result<Vec<u8>, String> {
-    Err("CodeX 凭据加密仅支持 Windows".to_string())
-}
-
-#[cfg(not(windows))]
 fn unprotect_secret(_encrypted: &[u8]) -> Result<String, String> {
     Err("CodeX 凭据解密仅支持 Windows".to_string())
 }
 
-fn load_managed_global_env() -> Result<Option<ManagedGlobalEnv>, String> {
-    let path = global_env_path()?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let encrypted =
-        fs::read(&path).map_err(|error| format!("无法读取 CodeX 全局环境变量记录：{error}"))?;
-    let json = unprotect_secret(&encrypted)?;
-    serde_json::from_str(&json)
-        .map(Some)
-        .map_err(|error| format!("CodeX 全局环境变量记录无法解析：{error}"))
+trait ProfileSecretStore {
+    fn read(&self, profile_id: &str) -> Result<Option<String>, String>;
+    fn write(&self, profile_id: &str, secret: &str) -> Result<(), String>;
+    fn delete(&self, profile_id: &str) -> Result<(), String>;
 }
 
+struct PlatformProfileSecretStore;
+
+impl ProfileSecretStore for PlatformProfileSecretStore {
+    fn read(&self, profile_id: &str) -> Result<Option<String>, String> {
+        platform_read_profile_secret(profile_id)
+    }
+
+    fn write(&self, profile_id: &str, secret: &str) -> Result<(), String> {
+        platform_write_profile_secret(profile_id, secret)
+    }
+
+    fn delete(&self, profile_id: &str) -> Result<(), String> {
+        platform_delete_profile_secret(profile_id)
+    }
+}
+
+fn platform_read_profile_secret(profile_id: &str) -> Result<Option<String>, String> {
+    #[cfg(windows)]
+    {
+        let path = credential_path(profile_id)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let encrypted =
+            fs::read(&path).map_err(|error| format!("无法读取 CodeX 加密凭据：{error}"))?;
+        return unprotect_secret(&encrypted).map(Some);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos_keychain::read(profile_id)
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = profile_id;
+        Err("当前平台没有可用的 CodeX 安全凭据存储".to_string())
+    }
+}
+
+fn platform_write_profile_secret(profile_id: &str, secret: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let path = credential_path(profile_id)?;
+        let encrypted = protect_secret(secret)?;
+        write_credential_atomic(&path, &encrypted)?;
+        return match platform_read_profile_secret(profile_id)? {
+            Some(verified) if verified == secret => Ok(()),
+            _ => Err("CodeX DPAPI 凭据写入后回读不一致".to_string()),
+        };
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos_keychain::write(profile_id, secret)?;
+        return match crate::macos_keychain::read(profile_id)? {
+            Some(verified) if verified == secret => Ok(()),
+            _ => Err("CodeX Keychain 凭据写入后回读不一致".to_string()),
+        };
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = (profile_id, secret);
+        Err("当前平台没有可用的 CodeX 安全凭据存储".to_string())
+    }
+}
+
+fn platform_delete_profile_secret(profile_id: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let path = credential_path(profile_id)?;
+        remove_if_exists(&path)?;
+        remove_transaction_sidecars(&path)?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos_keychain::delete(profile_id)?;
+        if crate::macos_keychain::read(profile_id)?.is_some() {
+            Err("CodeX Keychain 凭据删除后仍然存在".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = profile_id;
+        Err("当前平台没有可用的 CodeX 安全凭据存储".to_string())
+    }
+}
+
+fn read_profile_secret(profile_id: &str) -> Result<Option<String>, String> {
+    PlatformProfileSecretStore.read(profile_id)
+}
+
+fn write_profile_secret(profile_id: &str, secret: &str) -> Result<(), String> {
+    PlatformProfileSecretStore.write(profile_id, secret)
+}
+
+fn delete_profile_secret(profile_id: &str) -> Result<(), String> {
+    PlatformProfileSecretStore.delete(profile_id)
+}
+
+fn restore_profile_secret_with<S: ProfileSecretStore>(
+    store: &S,
+    profile_id: &str,
+    snapshot: Option<&str>,
+) -> Result<(), String> {
+    match snapshot {
+        Some(secret) => store.write(profile_id, secret),
+        None => store.delete(profile_id),
+    }
+}
+
+fn restore_profile_secret(profile_id: &str, snapshot: Option<&str>) -> Result<(), String> {
+    restore_profile_secret_with(&PlatformProfileSecretStore, profile_id, snapshot)
+}
+
+fn profile_secret_exists(profile_id: &str) -> Result<bool, String> {
+    Ok(read_profile_secret(profile_id)?.is_some())
+}
+
+fn load_managed_global_env() -> Result<Option<ManagedGlobalEnv>, String> {
+    #[cfg(not(windows))]
+    {
+        return Ok(None);
+    }
+
+    #[cfg(windows)]
+    {
+        let path = global_env_path()?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let encrypted =
+            fs::read(&path).map_err(|error| format!("无法读取 CodeX 全局环境变量记录：{error}"))?;
+        let json = unprotect_secret(&encrypted)?;
+        serde_json::from_str(&json)
+            .map(Some)
+            .map_err(|error| format!("CodeX 全局环境变量记录无法解析：{error}"))
+    }
+}
+
+#[cfg(windows)]
 fn save_managed_global_env(record: &ManagedGlobalEnv) -> Result<(), String> {
     let json = serde_json::to_string(record)
         .map_err(|error| format!("无法序列化 CodeX 全局环境变量记录：{error}"))?;
@@ -612,6 +825,7 @@ fn save_managed_global_env(record: &ManagedGlobalEnv) -> Result<(), String> {
     write_credential_atomic(&global_env_path()?, &encrypted)
 }
 
+#[cfg(windows)]
 fn write_user_env_var(name: &str, value: Option<&str>) -> Result<(), String> {
     let mut vars = HashMap::new();
     vars.insert(name.to_string(), value.unwrap_or_default().to_string());
@@ -619,62 +833,97 @@ fn write_user_env_var(name: &str, value: Option<&str>) -> Result<(), String> {
 }
 
 fn restore_user_env_snapshots(snapshots: &HashMap<String, Option<String>>) -> Result<(), String> {
-    let vars = snapshots
-        .iter()
-        .map(|(key, value)| (key.clone(), value.clone().unwrap_or_default()))
-        .collect();
-    env_applier::apply_env_vars(vars, "user".to_string())
+    #[cfg(windows)]
+    {
+        let vars = snapshots
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone().unwrap_or_default()))
+            .collect();
+        env_applier::apply_env_vars(vars, "user".to_string())
+    }
+
+    #[cfg(not(windows))]
+    {
+        if snapshots.is_empty() {
+            Ok(())
+        } else {
+            Err("当前平台不支持持久化 CodeX 第三方全局环境变量".to_string())
+        }
+    }
+}
+
+fn read_user_env_var(name: &str) -> Result<Option<String>, String> {
+    #[cfg(windows)]
+    {
+        registry::read_user_env_var(name)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = name;
+        Err("当前平台不支持持久化 CodeX 第三方全局环境变量".to_string())
+    }
 }
 
 fn transition_managed_global_env(
     next: Option<(&str, &str)>,
     previous: Option<&ManagedGlobalEnv>,
 ) -> Result<(), String> {
-    match (previous, next) {
-        (Some(previous), Some((next_key, next_value))) if previous.key == next_key => {
-            let current = registry::read_user_env_var(next_key)?;
-            let previous_value = if current.as_deref() == Some(previous.applied_value.as_str()) {
-                previous.previous_value.clone()
-            } else {
-                current
-            };
-            write_user_env_var(next_key, Some(next_value))?;
-            save_managed_global_env(&ManagedGlobalEnv {
-                key: next_key.to_string(),
-                applied_value: next_value.to_string(),
-                previous_value,
-            })?;
-        }
-        (previous, next) => {
-            if let Some(previous) = previous {
-                let current = registry::read_user_env_var(&previous.key)?;
-                if current.as_deref() == Some(previous.applied_value.as_str()) {
-                    write_user_env_var(&previous.key, previous.previous_value.as_deref())?;
-                }
-            }
-            if let Some((next_key, next_value)) = next {
-                let previous_value = registry::read_user_env_var(next_key)?;
+    #[cfg(not(windows))]
+    {
+        let _ = previous;
+        return if next.is_none() {
+            Ok(())
+        } else {
+            Err("macOS 不会持久化第三方 API Key 到用户环境；请仅在启动器内应用该方案".to_string())
+        };
+    }
+
+    #[cfg(windows)]
+    {
+        match (previous, next) {
+            (Some(previous), Some((next_key, next_value))) if previous.key == next_key => {
+                let current = read_user_env_var(next_key)?;
+                let previous_value = if current.as_deref() == Some(previous.applied_value.as_str())
+                {
+                    previous.previous_value.clone()
+                } else {
+                    current
+                };
                 write_user_env_var(next_key, Some(next_value))?;
                 save_managed_global_env(&ManagedGlobalEnv {
                     key: next_key.to_string(),
                     applied_value: next_value.to_string(),
                     previous_value,
                 })?;
-            } else {
-                remove_if_exists(&global_env_path()?)?;
-                remove_transaction_sidecars(&global_env_path()?)?;
+            }
+            (previous, next) => {
+                if let Some(previous) = previous {
+                    let current = read_user_env_var(&previous.key)?;
+                    if current.as_deref() == Some(previous.applied_value.as_str()) {
+                        write_user_env_var(&previous.key, previous.previous_value.as_deref())?;
+                    }
+                }
+                if let Some((next_key, next_value)) = next {
+                    let previous_value = read_user_env_var(next_key)?;
+                    write_user_env_var(next_key, Some(next_value))?;
+                    save_managed_global_env(&ManagedGlobalEnv {
+                        key: next_key.to_string(),
+                        applied_value: next_value.to_string(),
+                        previous_value,
+                    })?;
+                } else {
+                    remove_if_exists(&global_env_path()?)?;
+                    remove_transaction_sidecars(&global_env_path()?)?;
+                }
             }
         }
+        Ok(())
     }
-    Ok(())
 }
 
 fn resolve_profile_api_key(profile: &CodexProfile) -> Result<String, String> {
-    let secret_path = credential_path(&profile.id)?;
-    if secret_path.exists() {
-        return unprotect_secret(
-            &fs::read(&secret_path).map_err(|error| format!("无法读取 CodeX 加密凭据：{error}"))?,
-        );
+    if let Some(secret) = read_profile_secret(&profile.id)? {
+        return Ok(secret);
     }
     std::env::var(&profile.env_key).map_err(|_| {
         format!(
@@ -777,8 +1026,7 @@ fn normalize_index(
 fn enrich_profiles(state: &mut CodexProfileState) -> Result<(), String> {
     for profile in &mut state.profiles {
         profile.managed_profile_name = managed_profile_name(&profile.id);
-        let credential = credential_path(&profile.id)?;
-        profile.has_stored_api_key = credential.exists();
+        profile.has_stored_api_key = profile_secret_exists(&profile.id)?;
         let profile_path = managed_profile_path(&profile.id)?;
         if profile_path.exists() {
             let raw = fs::read_to_string(&profile_path).map_err(|error| {
@@ -792,9 +1040,42 @@ fn enrich_profiles(state: &mut CodexProfileState) -> Result<(), String> {
     Ok(())
 }
 
+fn global_profile_matches_document(state: &CodexProfileState, raw: &str) -> bool {
+    let Some(profile_id) = state.global_profile_id.as_deref() else {
+        return false;
+    };
+    let Some(profile) = state
+        .profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+    else {
+        return false;
+    };
+    build_global_toml(
+        Some(raw),
+        state.managed_global_provider_id.as_deref(),
+        profile,
+    )
+    .is_ok_and(|expected| expected == raw)
+}
+
+fn global_profile_in_sync(state: &CodexProfileState) -> Result<bool, String> {
+    if state.global_profile_id.is_none() {
+        return Ok(false);
+    }
+    let path = global_config_path()?;
+    if !path.exists() {
+        return Ok(false);
+    }
+    let raw =
+        fs::read_to_string(&path).map_err(|error| format!("无法读取全局 config.toml：{error}"))?;
+    Ok(global_profile_matches_document(state, &raw))
+}
+
 fn load_payload() -> Result<CodexProfilesPayload, String> {
     let mut state = load_profile_state()?;
     enrich_profiles(&mut state)?;
+    let global_profile_in_sync = global_profile_in_sync(&state)?;
     let stored_index = load_profile_index_state(CODEX_STATE_KEY)?;
     let index = normalize_index(
         &state.profiles,
@@ -807,17 +1088,45 @@ fn load_payload() -> Result<CodexProfilesPayload, String> {
         order: index.order,
         active_profile_id: index.active_profile_id,
         global_profile_id,
+        global_profile_in_sync,
         profiles_path: profiles_path()?.display().to_string(),
         global_config_path: global_config_path()?.display().to_string(),
         auth_path: auth_path()?.display().to_string(),
         global_config_error: global_config_error()?,
         auth_status: auth_status()?,
+        custom_global_sync_supported: custom_global_sync_supported(),
+        custom_global_key_sync_supported: custom_global_key_sync_supported(),
+        secret_storage_kind: secret_storage_kind(),
+        platform: platform_name(),
     })
 }
 
 #[tauri::command]
 pub fn load_codex_profiles() -> Result<CodexProfilesPayload, String> {
     load_payload()
+}
+
+#[tauri::command]
+pub fn reveal_codex_profile_api_key(profile_id: String) -> Result<Option<String>, String> {
+    if profile_id.is_empty()
+        || !profile_id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+    {
+        return Err("CodeX profile ID 含有不支持的字符".to_string());
+    }
+
+    let state = load_profile_state()?;
+    let profile = state
+        .profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| format!("CodeX 配置方案 '{}' 不存在", profile_id))?;
+    if profile.auth_mode != CodexAuthMode::Custom {
+        return Err("官方登录方案没有由启动器保存的第三方 API Key".to_string());
+    }
+
+    read_profile_secret(&profile_id)
 }
 
 #[tauri::command]
@@ -844,13 +1153,7 @@ pub async fn fetch_codex_models(request: FetchCodexModelsRequest) -> Result<Vec<
         }) {
             return Err("CodeX profile ID 含有不支持的字符".to_string());
         }
-        let path = credential_path(&request.profile_id)?;
-        path.exists()
-            .then(|| fs::read(&path))
-            .transpose()
-            .map_err(|error| format!("无法读取 CodeX 加密凭据：{error}"))?
-            .map(|encrypted| unprotect_secret(&encrypted))
-            .transpose()?
+        read_profile_secret(&request.profile_id)?
     } else {
         None
     };
@@ -873,7 +1176,6 @@ pub fn save_codex_profile(
     let profile = normalize_profile(request.profile)?;
     let metadata_path = profiles_path()?;
     let profile_path = managed_profile_path(&profile.id)?;
-    let secret_path = credential_path(&profile.id)?;
     let mut state = load_profile_state()?;
     let previous_profile = state
         .profiles
@@ -896,42 +1198,51 @@ pub fn save_codex_profile(
     } else {
         None
     };
+    let previous_secret = read_profile_secret(&profile.id)?;
+    let mut stored_profile = profile.clone();
+    stored_profile.has_stored_api_key = match stored_profile.auth_mode {
+        CodexAuthMode::Official => false,
+        CodexAuthMode::Custom if request.clear_api_key => false,
+        CodexAuthMode::Custom => {
+            request
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|key| !key.is_empty())
+                || previous_secret.is_some()
+        }
+    };
     let previous_managed_provider_id = previous_profile.as_ref().and_then(managed_provider_id);
     let rendered = build_profile_toml(
         existing_toml.as_deref(),
         previous_managed_provider_id,
-        &profile,
+        &stored_profile,
     )?;
 
     let previous_metadata = fs::read(&metadata_path).ok();
     let previous_toml = fs::read(&profile_path).ok();
-    let previous_secret = fs::read(&secret_path).ok();
     let previous_index = load_profile_index_state(CODEX_STATE_KEY)?;
 
-    let mut stored_profile = profile.clone();
     let transaction = (|| {
         write_toml_atomic(&profile_path, rendered.as_bytes())?;
 
         match stored_profile.auth_mode {
             CodexAuthMode::Official => {
-                remove_if_exists(&secret_path)?;
-                remove_transaction_sidecars(&secret_path)?;
+                delete_profile_secret(&stored_profile.id)?;
                 stored_profile.has_stored_api_key = false;
             }
             CodexAuthMode::Custom => {
                 if request.clear_api_key {
-                    remove_if_exists(&secret_path)?;
-                    remove_transaction_sidecars(&secret_path)?;
+                    delete_profile_secret(&stored_profile.id)?;
                 } else if let Some(api_key) = request
                     .api_key
                     .as_deref()
                     .map(str::trim)
                     .filter(|key| !key.is_empty())
                 {
-                    let encrypted = protect_secret(api_key)?;
-                    write_credential_atomic(&secret_path, &encrypted)?;
+                    write_profile_secret(&stored_profile.id, api_key)?;
                 }
-                stored_profile.has_stored_api_key = secret_path.exists();
+                stored_profile.has_stored_api_key = profile_secret_exists(&stored_profile.id)?;
             }
         }
 
@@ -943,9 +1254,6 @@ pub fn save_codex_profile(
             *existing = stored_profile.clone();
         } else {
             state.profiles.push(stored_profile.clone());
-        }
-        if state.global_profile_id.as_deref() == Some(stored_profile.id.as_str()) {
-            state.global_profile_id = None;
         }
         save_profile_state(&state)?;
 
@@ -968,9 +1276,8 @@ pub fn save_codex_profile(
             return Err("CodeX 活动方案索引写入后校验不一致".to_string());
         }
         if stored_profile.has_stored_api_key {
-            let encrypted = fs::read(&secret_path)
-                .map_err(|error| format!("无法回读 CodeX 加密凭据：{error}"))?;
-            unprotect_secret(&encrypted)?;
+            read_profile_secret(&stored_profile.id)?
+                .ok_or_else(|| "CodeX 安全凭据写入后不存在".to_string())?;
         }
         Ok(())
     })();
@@ -987,11 +1294,7 @@ pub fn save_codex_profile(
         ) {
             rollback_errors.push(rollback);
         }
-        if let Err(rollback) = restore_snapshot(
-            &secret_path,
-            previous_secret.as_deref(),
-            SnapshotKind::Credential,
-        ) {
+        if let Err(rollback) = restore_profile_secret(&profile.id, previous_secret.as_deref()) {
             rollback_errors.push(rollback);
         }
         if let Err(rollback) =
@@ -1016,12 +1319,25 @@ pub fn apply_codex_profile(
     request: ApplyCodexProfileRequest,
 ) -> Result<CodexProfilesPayload, String> {
     let mut state = load_profile_state()?;
+    enrich_profiles(&mut state)?;
     let profile = state
         .profiles
         .iter()
         .find(|profile| profile.id == request.profile_id)
         .cloned()
         .ok_or_else(|| format!("CodeX 配置方案 '{}' 不存在", request.profile_id))?;
+    if request.apply_to_global && !custom_global_sync_supported() {
+        return Err("当前平台不支持同步 CodeX 全局配置".to_string());
+    }
+    let profile_path = managed_profile_path(&profile.id)?;
+    let existing_profile_toml = fs::read_to_string(&profile_path)
+        .map_err(|error| format!("无法读取 CodeX profile：{error}"))?;
+    let rendered_profile_toml = build_profile_toml(
+        Some(&existing_profile_toml),
+        managed_provider_id(&profile),
+        &profile,
+    )?;
+    let profile_needs_update = rendered_profile_toml != existing_profile_toml;
     let previous_index = load_profile_index_state(CODEX_STATE_KEY)?;
     let previous_metadata = fs::read(profiles_path()?).ok();
     let global_path = global_config_path()?;
@@ -1039,7 +1355,7 @@ pub fn apply_codex_profile(
         } else {
             None
         };
-        Some(build_profile_toml(
+        Some(build_global_toml(
             existing.as_deref(),
             state.managed_global_provider_id.as_deref(),
             &profile,
@@ -1047,7 +1363,10 @@ pub fn apply_codex_profile(
     } else {
         None
     };
-    let next_api_key = if request.apply_to_global && profile.auth_mode == CodexAuthMode::Custom {
+    let next_api_key = if request.apply_to_global
+        && profile.auth_mode == CodexAuthMode::Custom
+        && custom_global_key_sync_supported()
+    {
         Some(resolve_profile_api_key(&profile)?)
     } else {
         None
@@ -1062,10 +1381,13 @@ pub fn apply_codex_profile(
     }
     let env_snapshots = env_keys
         .into_iter()
-        .map(|key| registry::read_user_env_var(&key).map(|value| (key, value)))
+        .map(|key| read_user_env_var(&key).map(|value| (key, value)))
         .collect::<Result<HashMap<_, _>, _>>()?;
 
     let transaction = (|| {
+        if profile_needs_update {
+            write_toml_atomic(&profile_path, rendered_profile_toml.as_bytes())?;
+        }
         if let Some(rendered) = rendered_global.as_ref() {
             write_toml_atomic(&global_path, rendered.as_bytes())?;
             let next_env = next_api_key
@@ -1086,6 +1408,13 @@ pub fn apply_codex_profile(
         if load_profile_index_state(CODEX_STATE_KEY)? != index {
             return Err("CodeX 活动方案写入后回读不一致".to_string());
         }
+        if profile_needs_update {
+            let verified_profile = fs::read_to_string(&profile_path)
+                .map_err(|error| format!("无法回读 CodeX profile：{error}"))?;
+            if verified_profile != rendered_profile_toml {
+                return Err("CodeX profile 写入后回读不一致".to_string());
+            }
+        }
 
         if let Some(rendered) = rendered_global.as_ref() {
             let verified_global = fs::read_to_string(&global_path)
@@ -1105,7 +1434,7 @@ pub fn apply_codex_profile(
                     if verified.key != profile.env_key || verified.applied_value != api_key {
                         return Err("CodeX 全局环境变量记录写入后回读不一致".to_string());
                     }
-                    if registry::read_user_env_var(&profile.env_key)?.as_deref() != Some(api_key) {
+                    if read_user_env_var(&profile.env_key)?.as_deref() != Some(api_key) {
                         return Err("CodeX 全局环境变量写入后回读不一致".to_string());
                     }
                 }
@@ -1122,6 +1451,15 @@ pub fn apply_codex_profile(
         let mut rollback_errors = Vec::new();
         if let Err(rollback) = save_profile_index_state(CODEX_STATE_KEY, &previous_index) {
             rollback_errors.push(rollback);
+        }
+        if profile_needs_update {
+            if let Err(rollback) = restore_snapshot(
+                &profile_path,
+                Some(existing_profile_toml.as_bytes()),
+                SnapshotKind::Toml,
+            ) {
+                rollback_errors.push(rollback);
+            }
         }
         if request.apply_to_global {
             if let Err(rollback) = restore_snapshot(
@@ -1165,7 +1503,6 @@ pub fn delete_codex_profile(
 ) -> Result<CodexProfilesPayload, String> {
     let metadata_path = profiles_path()?;
     let profile_path = managed_profile_path(&request.profile_id)?;
-    let secret_path = credential_path(&request.profile_id)?;
     let mut state = load_profile_state()?;
     if !state
         .profiles
@@ -1177,7 +1514,7 @@ pub fn delete_codex_profile(
 
     let previous_metadata = fs::read(&metadata_path).ok();
     let previous_toml = fs::read(&profile_path).ok();
-    let previous_secret = fs::read(&secret_path).ok();
+    let previous_secret = read_profile_secret(&request.profile_id)?;
     let previous_index = load_profile_index_state(CODEX_STATE_KEY)?;
     state
         .profiles
@@ -1188,9 +1525,8 @@ pub fn delete_codex_profile(
 
     let transaction = (|| {
         remove_if_exists(&profile_path)?;
-        remove_if_exists(&secret_path)?;
         remove_transaction_sidecars(&profile_path)?;
-        remove_transaction_sidecars(&secret_path)?;
+        delete_profile_secret(&request.profile_id)?;
         save_profile_state(&state)?;
         let index = normalize_index(
             &state.profiles,
@@ -1215,16 +1551,16 @@ pub fn delete_codex_profile(
                 previous_metadata.as_deref(),
                 SnapshotKind::Json,
             ),
-            (
-                &secret_path,
-                previous_secret.as_deref(),
-                SnapshotKind::Credential,
-            ),
             (&profile_path, previous_toml.as_deref(), SnapshotKind::Toml),
         ] {
             if let Err(rollback) = restore_snapshot(path, snapshot, kind) {
                 rollback_errors.push(rollback);
             }
+        }
+        if let Err(rollback) =
+            restore_profile_secret(&request.profile_id, previous_secret.as_deref())
+        {
+            rollback_errors.push(rollback);
         }
         if rollback_errors.is_empty() {
             return Err(format!("删除 CodeX 配置失败，旧数据已恢复：{error}"));
@@ -1254,8 +1590,18 @@ pub fn resolve_codex_profile(profile_id: String) -> Result<CodexLaunchContext, S
             profile_path.display()
         ));
     }
+    let existing_toml = fs::read_to_string(&profile_path)
+        .map_err(|error| format!("无法读取 CodeX profile：{error}"))?;
+    let rendered_toml = build_profile_toml(
+        Some(&existing_toml),
+        managed_provider_id(&profile),
+        &profile,
+    )?;
+    if rendered_toml != existing_toml {
+        write_toml_atomic(&profile_path, rendered_toml.as_bytes())?;
+    }
     let mut env_vars = BTreeMap::new();
-    if profile.auth_mode == CodexAuthMode::Custom {
+    if profile.auth_mode == CodexAuthMode::Custom && !uses_keychain_command_auth(&profile) {
         let api_key = resolve_profile_api_key(&profile)?;
         env_vars.insert(profile.env_key.clone(), api_key);
     }
@@ -1268,6 +1614,30 @@ pub fn resolve_codex_profile(profile_id: String) -> Result<CodexLaunchContext, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct MemorySecretStore {
+        values: RefCell<HashMap<String, String>>,
+    }
+
+    impl ProfileSecretStore for MemorySecretStore {
+        fn read(&self, profile_id: &str) -> Result<Option<String>, String> {
+            Ok(self.values.borrow().get(profile_id).cloned())
+        }
+
+        fn write(&self, profile_id: &str, secret: &str) -> Result<(), String> {
+            self.values
+                .borrow_mut()
+                .insert(profile_id.to_string(), secret.to_string());
+            Ok(())
+        }
+
+        fn delete(&self, profile_id: &str) -> Result<(), String> {
+            self.values.borrow_mut().remove(profile_id);
+            Ok(())
+        }
+    }
 
     fn official_profile() -> CodexProfile {
         CodexProfile {
@@ -1286,6 +1656,78 @@ mod tests {
             managed_profile_name: String::new(),
             extra: Map::new(),
         }
+    }
+
+    #[test]
+    fn credential_store_contract_supports_profile_isolation_delete_and_rollback() {
+        let store = MemorySecretStore::default();
+        store.write("profile-a", "secret-a").expect("write a");
+        store.write("profile-b", "secret-b").expect("write b");
+        assert_eq!(
+            store.read("profile-a").expect("read a").as_deref(),
+            Some("secret-a")
+        );
+        assert_eq!(
+            store.read("profile-b").expect("read b").as_deref(),
+            Some("secret-b")
+        );
+
+        let snapshot = store.read("profile-a").expect("snapshot");
+        store.write("profile-a", "replacement").expect("replace");
+        restore_profile_secret_with(&store, "profile-a", snapshot.as_deref()).expect("rollback");
+        assert_eq!(store.read("profile-a").expect("read restored"), snapshot);
+
+        restore_profile_secret_with(&store, "profile-b", None).expect("delete");
+        assert_eq!(store.read("profile-b").expect("read deleted"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_reports_keychain_and_disables_custom_global_secret_sync() {
+        assert_eq!(secret_storage_kind(), "macos_keychain");
+        assert!(custom_global_sync_supported());
+        assert!(!custom_global_key_sync_supported());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_custom_global_sync_uses_keychain_command_auth() {
+        let mut profile = official_profile();
+        profile.auth_mode = CodexAuthMode::Custom;
+        profile.provider_id = "company_proxy".to_string();
+        profile.provider_name = "Company Proxy".to_string();
+        profile.base_url = "https://proxy.example.com/v1".to_string();
+        profile.has_stored_api_key = true;
+        let profile = normalize_profile(profile).expect("valid profile");
+
+        let rendered = build_global_toml(None, None, &profile).expect("render global config");
+        let document = DocumentMut::from_str(&rendered).expect("parse");
+        let provider = document["model_providers"]["company_proxy"]
+            .as_table()
+            .expect("provider table");
+        assert!(provider.get("env_key").is_none());
+        assert_eq!(
+            provider["auth"]["command"].as_str(),
+            Some("/usr/bin/security")
+        );
+        let arguments = provider["auth"]["args"]
+            .as_array()
+            .expect("auth arguments")
+            .iter()
+            .filter_map(TomlValue::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            arguments,
+            vec![
+                "find-generic-password",
+                "-s",
+                crate::macos_keychain::SERVICE,
+                "-a",
+                profile.id.as_str(),
+                "-w",
+            ]
+        );
+        assert!(!rendered.contains("sk-test-secret"));
     }
 
     #[test]
@@ -1337,7 +1779,7 @@ mod tests {
         profile.base_url = "https://new.example.com/v1".to_string();
         let profile = normalize_profile(profile).expect("valid profile");
 
-        let rendered = build_profile_toml(Some(existing), Some("old_proxy"), &profile)
+        let rendered = build_global_toml(Some(existing), Some("old_proxy"), &profile)
             .expect("render global config");
         let document = DocumentMut::from_str(&rendered).expect("parse");
         assert_eq!(document["approval_policy"].as_str(), Some("on-request"));
@@ -1350,6 +1792,23 @@ mod tests {
     }
 
     #[test]
+    fn global_sync_status_detects_saved_profile_changes() {
+        let profile = official_profile();
+        let rendered = build_global_toml(None, None, &profile).expect("render global config");
+        let mut state = CodexProfileState::default();
+        state.global_profile_id = Some(profile.id.clone());
+        state.profiles.push(profile);
+
+        assert!(global_profile_matches_document(&state, &rendered));
+
+        state.profiles[0].model = "gpt-updated".to_string();
+        assert!(
+            !global_profile_matches_document(&state, &rendered),
+            "saving the same profile with new values must require a global re-sync",
+        );
+    }
+
+    #[test]
     fn official_global_sync_removes_the_previous_managed_provider() {
         let existing = concat!(
             "model_provider = \"company_proxy\"\n",
@@ -1358,7 +1817,7 @@ mod tests {
             "base_url = \"https://proxy.example.com/v1\"\n",
         );
         let profile = official_profile();
-        let rendered = build_profile_toml(Some(existing), Some("company_proxy"), &profile)
+        let rendered = build_global_toml(Some(existing), Some("company_proxy"), &profile)
             .expect("render official global config");
         let document = DocumentMut::from_str(&rendered).expect("parse");
         assert_eq!(document["model_provider"].as_str(), Some("openai"));

@@ -10,6 +10,7 @@ import type { CliProfileRef, SessionEntry } from '@/types/config'
 import { CLI_DESCRIPTORS, type CliKind } from '@/types/cli'
 import { useCliRuntimeStore } from './cliRuntime'
 import { getDefaultShell } from '@/composables/useDefaultShell'
+import { usePlatform } from '@/composables/usePlatform'
 
 export type TerminalStatus = 'off' | 'idle' | 'running'
 export type SidebarTabType = 'tools' | 'file' | 'terminal' | 'browser'
@@ -1282,9 +1283,11 @@ export const useProjectStore = defineStore('project', () => {
       cmd = [runtimeStore.executable('claude'), ...args]
     } else if (session.cliKind === 'codex') {
       const codexStore = useCodexConfigStore()
-      // Windows IME input can arrive as a fast burst of non-ASCII characters.
-      // Let Codex insert each character directly instead of applying its paste heuristic.
-      const args: string[] = ['--no-alt-screen', '-c', 'disable_paste_burst=true']
+      const { isWindows } = usePlatform()
+      const args: string[] = ['--no-alt-screen']
+      // This is a Windows ConPTY/IME workaround. Unix PTYs must keep Codex's
+      // normal paste heuristics and receive their UTF-8 input untouched.
+      if (isWindows.value) args.push('-c', 'disable_paste_burst=true')
       try {
         await codexStore.ensureLoaded()
         if (codexStore.globalConfigError) {

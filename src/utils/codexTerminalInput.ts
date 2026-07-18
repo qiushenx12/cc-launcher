@@ -24,3 +24,8 @@ export function encodeCodexConptyInput(data: string): string {
     return win32InputRecord(character, true) + win32InputRecord(character, false)
   }).join('')
 }
+
+/** Keep the ConPTY workaround off Unix PTYs, where input is already UTF-8. */
+export function encodeCodexTerminalInput(data: string, isWindows: boolean): string {
+  return isWindows ? encodeCodexConptyInput(data) : data
+}

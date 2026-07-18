@@ -163,15 +163,12 @@ pub fn pty_create(
     for (k, v) in std::env::vars() {
         cmd_builder.env(&k, &v);
     }
+    #[cfg(target_os = "macos")]
+    if let Some(path) = crate::platform_env::effective_path() {
+        cmd_builder.env("PATH", path);
+    }
     for (k, v) in &env {
         cmd_builder.env(k, v);
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // GUI apps on macOS have a minimal PATH; prepend common locations
-        let extra = "/usr/local/bin:/opt/homebrew/bin";
-        let path = std::env::var("PATH").unwrap_or_default();
-        cmd_builder.env("PATH", format!("{}:{}", extra, path));
     }
     cmd_builder.env("TERM", "xterm-256color");
     cmd_builder.env("COLORTERM", "truecolor");
@@ -470,43 +467,99 @@ pub fn pty_resize(
     Ok(())
 }
 
+#[cfg(windows)]
 fn kill_process_tree(pid: u32) {
-    // ponytail: taskkill covers the common Windows process-tree cleanup;
-    // replace with CreateToolhelp32Snapshot if taskkill ever proves unreliable.
     let mut cmd = std::process::Command::new("taskkill");
     cmd.args(["/T", "/F", "/PID", &pid.to_string()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     let _ = cmd.output();
+}
+
+#[cfg(unix)]
+fn signal_process_group(process_group_id: i32, signal: i32) -> std::io::Result<()> {
+    let result = unsafe { libc::kill(-process_group_id, signal) };
+    if result == 0 {
+        return Ok(());
+    }
+
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        // The process group has already exited, which is the desired state.
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(unix)]
+fn process_group_exists(process_group_id: i32) -> bool {
+    let result = unsafe { libc::kill(-process_group_id, 0) };
+    if result == 0 {
+        return true;
+    }
+
+    // EPERM means the group exists but cannot be signalled by this process.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(unix)]
+fn kill_process_tree(pid: u32) {
+    let Ok(process_group_id) = i32::try_from(pid) else {
+        return;
+    };
+
+    // portable-pty calls setsid() before exec on Unix, making the direct child
+    // the leader of an isolated process group. Signal that whole group so CLI
+    // helpers such as Node processes and MCP servers do not outlive the tab.
+    if signal_process_group(process_group_id, libc::SIGTERM).is_err() {
+        return;
+    }
+
+    for _ in 0..10 {
+        if !process_group_exists(process_group_id) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    let _ = signal_process_group(process_group_id, libc::SIGKILL);
 }
 
 #[tauri::command]
 pub fn pty_kill(tab_id: u32, state: State<'_, Mutex<PtyManager>>) -> Result<(), String> {
-    let mut mgr = state.lock().map_err(|e| e.to_string())?;
-    kill_session(&mut mgr, tab_id);
+    let session = {
+        let mut mgr = state.lock().map_err(|e| e.to_string())?;
+        take_session(&mut mgr, tab_id)
+    };
+    if let Some(session) = session {
+        terminate_session(session);
+    }
     Ok(())
 }
 
-fn kill_session(mgr: &mut PtyManager, tab_id: u32) {
-    if let Some(mut session) = mgr.sessions.remove(&tab_id) {
-        // Drop the writer first to send EOF to the slave side.
-        drop(session.writer);
-        // Kill the direct child, then cascade to any grandchildren spawned
-        // inside the PTY (e.g. node/python processes started by claude.exe).
-        let _ = session.child.kill();
-        if let Some(pid) = session.child_pid {
-            kill_process_tree(pid);
-        }
-        // ponytail: drop the master immediately instead of sleeping while
-        // holding the PTY manager lock; portable_pty cleans up on drop.
-    }
+fn take_session(mgr: &mut PtyManager, tab_id: u32) -> Option<PtySession> {
     mgr.line_buffers.remove(&tab_id);
+    mgr.sessions.remove(&tab_id)
+}
+
+fn terminate_session(mut session: PtySession) {
+    // Drop the writer first to send EOF to the slave side.
+    drop(session.writer);
+
+    // Cascade before killing the direct child: once the parent exits, detached
+    // descendants can be re-parented and become harder to identify on Windows.
+    if let Some(pid) = session.child_pid {
+        kill_process_tree(pid);
+    }
+
+    // Keep a direct-child fallback and reap it even if process-tree cleanup was
+    // unavailable or only partially successful.
+    let _ = session.child.kill();
+    let _ = session.child.wait();
 }
 
 pub fn cleanup_all_sessions(app: &tauri::AppHandle) {
@@ -515,7 +568,64 @@ pub fn cleanup_all_sessions(app: &tauri::AppHandle) {
     let tab_ids: Vec<u32> = mgr.sessions.keys().copied().collect();
     drop(mgr);
     for tab_id in tab_ids {
-        let Ok(mut mgr) = state.lock() else { return };
-        kill_session(&mut mgr, tab_id);
+        let session = {
+            let Ok(mut mgr) = state.lock() else { return };
+            take_session(&mut mgr, tab_id)
+        };
+        if let Some(session) = session {
+            terminate_session(session);
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod process_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn unix_cleanup_terminates_the_full_pty_process_group() {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("open test PTY");
+
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        // Both the shell and its background child ignore graceful signals so
+        // the test also exercises the process-group SIGKILL fallback.
+        command.arg("trap '' HUP TERM; sleep 30 & wait");
+        let mut child = pair
+            .slave
+            .spawn_command(command)
+            .expect("spawn isolated PTY process group");
+        let pid = child.process_id().expect("test child PID");
+        let process_group_id = i32::try_from(pid).expect("PID fits in i32");
+
+        assert_ne!(process_group_id, unsafe { libc::getpgrp() });
+        assert!(process_group_exists(process_group_id));
+
+        kill_process_tree(pid);
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let mut cleaned = false;
+        for _ in 0..20 {
+            if !process_group_exists(process_group_id) {
+                cleaned = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        // Ensure a failing assertion can never leave the test process running.
+        if !cleaned {
+            let _ = signal_process_group(process_group_id, libc::SIGKILL);
+        }
+
+        assert!(cleaned, "PTY process group survived cleanup");
     }
 }

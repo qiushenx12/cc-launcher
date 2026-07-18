@@ -54,9 +54,13 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
   const order = ref<string[]>([])
   const activeProfileId = ref<string | null>(null)
   const globalProfileId = ref<string | null>(null)
+  const globalProfileInSync = ref(false)
   const selectedProfileId = ref<string | null>(null)
   const editingProfile = ref<CodexProfile>(emptyProfile())
   const apiKeyInput = ref('')
+  const revealedStoredApiKey = ref('')
+  const storedApiKeyRevealed = ref(false)
+  const apiKeyRevealing = ref(false)
   const clearStoredApiKey = ref(false)
   const baseline = ref(serializeDraft(editingProfile.value, '', false))
   const loaded = ref(false)
@@ -78,6 +82,10 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
     hasCredentials: false,
     error: null,
   })
+  const customGlobalSyncSupported = ref(false)
+  const customGlobalKeySyncSupported = ref(false)
+  const secretStorageKind = ref<CodexProfilesPayload['secretStorageKind']>('unsupported')
+  const platform = ref('unknown')
 
   const orderedProfiles = computed(() => {
     const byId = new Map(profiles.value.map(profile => [profile.id, profile]))
@@ -94,8 +102,12 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
     ? { cliKind: 'codex', profileId: activeProfile.value.id }
     : null)
 
+  const draftApiKeyInput = computed(() =>
+    apiKeyInput.value === revealedStoredApiKey.value ? '' : apiKeyInput.value,
+  )
+
   const isDirty = computed(() =>
-    serializeDraft(editingProfile.value, apiKeyInput.value, clearStoredApiKey.value) !== baseline.value,
+    serializeDraft(editingProfile.value, draftApiKeyInput.value, clearStoredApiKey.value) !== baseline.value,
   )
 
   const authStatusLabel = computed(() => {
@@ -107,16 +119,22 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
   })
 
   function markClean() {
-    baseline.value = serializeDraft(editingProfile.value, apiKeyInput.value, clearStoredApiKey.value)
+    baseline.value = serializeDraft(editingProfile.value, draftApiKeyInput.value, clearStoredApiKey.value)
+  }
+
+  function resetApiKeyEditor() {
+    apiKeyInput.value = ''
+    revealedStoredApiKey.value = ''
+    storedApiKeyRevealed.value = false
+    clearStoredApiKey.value = false
   }
 
   function editProfile(profile: CodexProfile) {
     selectedProfileId.value = profile.id
     editingProfile.value = cloneProfile(profile)
-    apiKeyInput.value = ''
-    clearStoredApiKey.value = false
+    resetApiKeyEditor()
     availableModels.value = []
-    syncToGlobal.value = false
+    syncToGlobal.value = Boolean(profile.id && globalProfileId.value === profile.id)
     markClean()
   }
 
@@ -128,11 +146,16 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
       ? payload.activeProfileId
       : null
     globalProfileId.value = payload.globalProfileId
+    globalProfileInSync.value = payload.globalProfileInSync
     profilesPath.value = payload.profilesPath
     globalConfigPath.value = payload.globalConfigPath
     authPath.value = payload.authPath
     globalConfigError.value = payload.globalConfigError
     authStatus.value = payload.authStatus
+    customGlobalSyncSupported.value = payload.customGlobalSyncSupported
+    customGlobalKeySyncSupported.value = payload.customGlobalKeySyncSupported
+    secretStorageKind.value = payload.secretStorageKind
+    platform.value = payload.platform
     const fallbackSelectedId = selectedProfileId.value
       && profiles.value.some(profile => profile.id === selectedProfileId.value)
       ? selectedProfileId.value
@@ -149,8 +172,7 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
     else {
       selectedProfileId.value = null
       editingProfile.value = emptyProfile()
-      apiKeyInput.value = ''
-      clearStoredApiKey.value = false
+      resetApiKeyEditor()
       availableModels.value = []
       syncToGlobal.value = false
       markClean()
@@ -186,8 +208,7 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
     else {
       selectedProfileId.value = null
       editingProfile.value = emptyProfile()
-      apiKeyInput.value = ''
-      clearStoredApiKey.value = false
+      resetApiKeyEditor()
       availableModels.value = []
       syncToGlobal.value = false
       markClean()
@@ -220,8 +241,7 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
     if (!(await confirmDiscardChanges('新建配置方案'))) return false
     selectedProfileId.value = null
     editingProfile.value = emptyProfile()
-    apiKeyInput.value = ''
-    clearStoredApiKey.value = false
+    resetApiKeyEditor()
     availableModels.value = []
     syncToGlobal.value = false
     markClean()
@@ -229,17 +249,20 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
   }
 
   async function saveProfile(): Promise<boolean> {
-    if (saving.value) return false
+    if (saving.value || apiKeyRevealing.value) return false
     saving.value = true
     const requestedGlobalSync = syncToGlobal.value
     const profile = cloneProfile(editingProfile.value)
     if (!profile.id) profile.id = `profile-${crypto.randomUUID()}`
     const nextOrder = order.value.includes(profile.id) ? [...order.value] : [...order.value, profile.id]
+    const apiKeyForSave = apiKeyInput.value === revealedStoredApiKey.value
+      ? null
+      : apiKeyInput.value.trim() || null
     try {
       const payload = await invoke<CodexProfilesPayload>('save_codex_profile', {
         request: {
           profile,
-          apiKey: apiKeyInput.value.trim() || null,
+          apiKey: apiKeyForSave,
           clearApiKey: clearStoredApiKey.value,
           order: nextOrder,
           activeProfileId: activeProfileId.value,
@@ -259,10 +282,12 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
 
   async function applyProfile(): Promise<boolean> {
     const profile = profiles.value.find(item => item.id === selectedProfileId.value)
-    if (!profile || isDirty.value || applying.value) return false
+    if (!profile || isDirty.value || applying.value || apiKeyRevealing.value) return false
     const applyToGlobal = syncToGlobal.value
+      && (profile.authMode === 'official' || customGlobalSyncSupported.value)
     if (profile.id === activeProfileId.value
-      && (!applyToGlobal || profile.id === globalProfileId.value)) return true
+      && (!applyToGlobal
+        || (profile.id === globalProfileId.value && globalProfileInSync.value))) return true
 
     applying.value = true
     try {
@@ -280,9 +305,20 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
         throw new Error('全局方案写入后回读不一致')
       }
       syncToGlobal.value = applyToGlobal
-      statusMessage.value = applyToGlobal
-        ? `CodeX 配置 '${profile.name}' 已应用到启动器和全局；重启外部终端及 CodeX 桌面端后生效`
-        : `CodeX 配置 '${profile.name}' 已应用；新启动或重新打开的 CodeX 终端将使用该配置`
+      if (applyToGlobal
+        && profile.authMode === 'custom'
+        && secretStorageKind.value === 'macos_keychain'
+        && profile.hasStoredApiKey) {
+        statusMessage.value = `CodeX 配置 '${profile.name}' 已同步到启动器和全局；Codex 将通过命令式认证从 Keychain 读取 Key，首次使用时可能需要授权`
+      } else if (applyToGlobal
+        && profile.authMode === 'custom'
+        && !customGlobalKeySyncSupported.value) {
+        statusMessage.value = `CodeX 配置 '${profile.name}' 已同步到启动器和全局；外部 CodeX 仍需自行设置 ${profile.envKey}`
+      } else {
+        statusMessage.value = applyToGlobal
+          ? `CodeX 配置 '${profile.name}' 已应用到启动器和全局；重启外部终端及 CodeX 桌面端后生效`
+          : `CodeX 配置 '${profile.name}' 已应用；新启动或重新打开的 CodeX 终端将使用该配置`
+      }
       return true
     } catch (error) {
       await loadProfiles(true)
@@ -291,6 +327,51 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
       return false
     } finally {
       applying.value = false
+    }
+  }
+
+  async function revealApiKey(): Promise<boolean> {
+    const profile = editingProfile.value
+    if (!profile.id
+      || profile.authMode !== 'custom'
+      || !profile.hasStoredApiKey
+      || apiKeyRevealing.value) return false
+
+    const requestedProfileId = profile.id
+    const requestedProfileName = profile.name
+    apiKeyRevealing.value = true
+    try {
+      const apiKey = await invoke<string | null>('reveal_codex_profile_api_key', {
+        profileId: requestedProfileId,
+      })
+      if (editingProfile.value.id !== requestedProfileId) return false
+      if (!apiKey) {
+        editingProfile.value.hasStoredApiKey = false
+        storedApiKeyRevealed.value = false
+        const storedProfile = profiles.value.find(item => item.id === requestedProfileId)
+        if (storedProfile) storedProfile.hasStoredApiKey = false
+        statusMessage.value = `CodeX 配置 '${requestedProfileName}' 没有可读取的已保存 Key`
+        return false
+      }
+
+      apiKeyInput.value = apiKey
+      revealedStoredApiKey.value = apiKey
+      storedApiKeyRevealed.value = true
+      clearStoredApiKey.value = false
+      const storageLabel = secretStorageKind.value === 'macos_keychain'
+        ? 'Keychain'
+        : secretStorageKind.value === 'windows_dpapi'
+          ? '安全凭据存储'
+          : '凭据存储'
+      statusMessage.value = `已从 ${storageLabel} 读取 Key；点击“隐藏”可重新遮挡`
+      return true
+    } catch (error) {
+      if (editingProfile.value.id === requestedProfileId) {
+        statusMessage.value = `读取已保存的 CodeX Key 失败：${error}`
+      }
+      return false
+    } finally {
+      apiKeyRevealing.value = false
     }
   }
 
@@ -385,11 +466,14 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
     orderedProfiles,
     activeProfileId,
     globalProfileId,
+    globalProfileInSync,
     selectedProfileId,
     activeProfile,
     activeProfileRef,
     editingProfile,
     apiKeyInput,
+    storedApiKeyRevealed,
+    apiKeyRevealing,
     clearStoredApiKey,
     isDirty,
     loaded,
@@ -406,6 +490,10 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
     authPath,
     globalConfigError,
     authStatus,
+    customGlobalSyncSupported,
+    customGlobalKeySyncSupported,
+    secretStorageKind,
+    platform,
     authStatusLabel,
     loadProfiles,
     ensureLoaded,
@@ -413,6 +501,7 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
     newProfile,
     saveProfile,
     applyProfile,
+    revealApiKey,
     fetchModels,
     deleteProfile,
     discardChanges,

@@ -49,11 +49,16 @@ export interface CodexProfilesPayload {
   order: string[]
   activeProfileId: string | null
   globalProfileId: string | null
+  globalProfileInSync: boolean
   profilesPath: string
   globalConfigPath: string
   authPath: string
   globalConfigError: string | null
   authStatus: CodexAuthStatus
+  customGlobalSyncSupported: boolean
+  customGlobalKeySyncSupported: boolean
+  secretStorageKind: 'windows_dpapi' | 'macos_keychain' | 'unsupported'
+  platform: string
 }
 
 export interface CodexLaunchContext {
@@ -163,6 +168,13 @@ export interface OpencodeConnectionStatusPayload {
   configRevision: string
   disabledProviderIds: string[]
   connectionKeys: Record<string, string>
+}
+
+export interface OpencodePermissionStatus {
+  supported: boolean
+  requiresRepair: boolean
+  directories: string[]
+  blockedDirectories: string[]
 }
 
 export interface SessionEntry {

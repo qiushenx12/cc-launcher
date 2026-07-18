@@ -7,6 +7,7 @@ import type {
   OpencodeGlobalProvider,
   OpencodeConnectionStatusPayload,
   OpencodeLaunchContext,
+  OpencodePermissionStatus,
 } from '@/types/config'
 
 function emptyConfig(): OpencodeGlobalConfigPayload {
@@ -40,6 +41,15 @@ function editableSnapshot(config: OpencodeGlobalConfigPayload) {
   })
 }
 
+function emptyPermissionStatus(): OpencodePermissionStatus {
+  return {
+    supported: false,
+    requiresRepair: false,
+    directories: [],
+    blockedDirectories: [],
+  }
+}
+
 export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
   const editingConfig = ref<OpencodeGlobalConfigPayload>(emptyConfig())
   const baseline = ref(editableSnapshot(editingConfig.value))
@@ -54,12 +64,62 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
   const resolvedPreview = ref<unknown>(null)
   const previewError = ref('')
   const lastLaunchContext = ref<OpencodeLaunchContext | null>(null)
+  const permissionStatus = ref<OpencodePermissionStatus>(emptyPermissionStatus())
+  const permissionChecking = ref(false)
+  const permissionRepairing = ref(false)
+  const permissionError = ref('')
 
   const isDirty = computed(() => editableSnapshot(editingConfig.value) !== baseline.value)
   const configuredModelIds = computed(() => editingConfig.value.providers.flatMap(provider =>
     provider.models.map(model => `${provider.id}/${model.id}`),
   ))
   const globalConfigPath = computed(() => editingConfig.value.configPath)
+
+  async function checkPermissions() {
+    if (permissionChecking.value) return permissionStatus.value
+    permissionChecking.value = true
+    try {
+      permissionStatus.value = await invoke<OpencodePermissionStatus>('check_opencode_permissions')
+      permissionError.value = ''
+    } catch (error) {
+      permissionError.value = `无法检查 OpenCode 目录权限：${error}`
+    } finally {
+      permissionChecking.value = false
+    }
+    return permissionStatus.value
+  }
+
+  async function repairPermissions() {
+    if (permissionRepairing.value) return false
+    permissionRepairing.value = true
+    const preserveDraft = isDirty.value
+    try {
+      permissionStatus.value = await invoke<OpencodePermissionStatus>('repair_opencode_permissions')
+      permissionError.value = ''
+      if (!preserveDraft) await loadConfig(true)
+      statusMessage.value = preserveDraft
+        ? 'OpenCode 目录权限已修复，界面修改保持不变；请重新点击保存'
+        : 'OpenCode 目录权限已修复，配置已重新读取'
+      return true
+    } catch (error) {
+      await checkPermissions()
+      statusMessage.value = `修复 OpenCode 目录权限失败：${error}`
+      return false
+    } finally {
+      permissionRepairing.value = false
+    }
+  }
+
+  async function permissionAwareError(error: unknown) {
+    const detail = `${error}`
+    if (/Permission denied|os error 13|权限不足|拒绝访问/i.test(detail)) {
+      await checkPermissions()
+      if (permissionStatus.value.requiresRepair) {
+        return `${detail}。请使用页面上方的“一键修复权限”完成 macOS 授权后重试`
+      }
+    }
+    return detail
+  }
 
   function applyPayload(payload: OpencodeGlobalConfigPayload) {
     editingConfig.value = cloneConfig(payload)
@@ -79,7 +139,7 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
       statusMessage.value = `已从 ${payload.configPath} 读取 ${payload.providers.length} 个自定义 Provider`
     } catch (error) {
       loaded.value = false
-      loadError.value = `读取 opencode.jsonc 失败：${error}`
+      loadError.value = `读取 opencode.jsonc 失败：${await permissionAwareError(error)}`
       statusMessage.value = loadError.value
     } finally {
       loading.value = false
@@ -234,7 +294,7 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
       statusMessage.value = `Provider '${provider.id}' 的 Key 已保存到 OpenCode auth.json`
       return true
     } catch (error) {
-      statusMessage.value = `保存 Provider '${provider.id}' Key 失败：${error}`
+      statusMessage.value = `保存 Provider '${provider.id}' Key 失败：${await permissionAwareError(error)}`
       return false
     }
   }
@@ -256,7 +316,7 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
       statusMessage.value = `Provider '${provider.id}' 已启用；Key 保持不变`
       return true
     } catch (error) {
-      statusMessage.value = `连接 Provider '${provider.id}' 失败：${error}`
+      statusMessage.value = `连接 Provider '${provider.id}' 失败：${await permissionAwareError(error)}`
       return false
     }
   }
@@ -279,7 +339,7 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
       statusMessage.value = `Provider '${provider.id}' 已禁用；配置和 Key 均已保留`
       return true
     } catch (error) {
-      statusMessage.value = `禁用 Provider '${provider.id}' 失败：${error}`
+      statusMessage.value = `禁用 Provider '${provider.id}' 失败：${await permissionAwareError(error)}`
       return false
     }
   }
@@ -295,7 +355,7 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
       statusMessage.value = `已保存并重新读取 ${payload.configPath}`
       return true
     } catch (error) {
-      statusMessage.value = `保存 opencode.jsonc 失败，界面内容已保留：${error}`
+      statusMessage.value = `保存 opencode.jsonc 失败，界面内容已保留：${await permissionAwareError(error)}`
       return false
     } finally {
       saving.value = false
@@ -338,9 +398,15 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
     resolvedPreview,
     previewError,
     lastLaunchContext,
+    permissionStatus,
+    permissionChecking,
+    permissionRepairing,
+    permissionError,
     isDirty,
     configuredModelIds,
     globalConfigPath,
+    checkPermissions,
+    repairPermissions,
     loadConfig,
     ensureLoaded,
     refreshConfig,

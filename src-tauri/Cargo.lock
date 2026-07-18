@@ -16,6 +16,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "jsonc-parser",
+ "libc",
  "notify",
  "portable-pty",
  "reqwest 0.12.28",

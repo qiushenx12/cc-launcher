@@ -104,6 +104,7 @@ import { redactConfigRecord } from '@/utils/configSecurity'
 import CliClaudePanel from '@/components/cli/CliClaudePanel.vue'
 import CliCodexPanel from '@/components/cli/CliCodexPanel.vue'
 import CliOpencodePanel from '@/components/cli/CliOpencodePanel.vue'
+import { usePlatform } from '@/composables/usePlatform'
 import ConfigStatusBanner from './ConfigStatusBanner.vue'
 
 defineProps<{
@@ -115,6 +116,7 @@ const runtimeStore = useCliRuntimeStore()
 const claudeStore = useClaudeStore()
 const codexStore = useCodexConfigStore()
 const opencodeStore = useOpencodeConfigStore()
+const { isMacOS } = usePlatform()
 const unregisterClaudeGuard = workspaceStore.registerDraftGuard('claude', {
   isDirty: () => claudeStore.isConfigDirty,
   discard: () => claudeStore.discardConfigChanges(),
@@ -141,10 +143,16 @@ const sourceDescription = computed(() => {
   if (workspaceStore.activeKind === 'claude') {
     const settingsSource = claudeStore.settingsSourcePath || '~/.claude/settings.json'
     const compatibility = claudeStore.settingsUsingLegacyPath ? '（当前从历史路径兼容读取）' : ''
-    return `启动器方案：%APPDATA%\\ClaudeEnvManager\\env_configs.json；Claude 设置：${settingsSource}${compatibility}。`
+    const launcherPath = isMacOS.value
+      ? '~/Library/Application Support/ClaudeEnvManager/env_configs.json'
+      : '%APPDATA%\\ClaudeEnvManager\\env_configs.json'
+    return `启动器方案：${launcherPath}；Claude 设置：${settingsSource}${compatibility}。`
   }
   if (workspaceStore.activeKind === 'codex') {
-    return `全局配置：${codexStore.globalConfigPath || '~/.codex/config.toml'}（仅显式勾选时同步）；启动器方案：${codexStore.profilesPath || '%APPDATA%\\ClaudeEnvManager\\codex\\profiles.json'}；auth.json 只读。`
+    const launcherPath = isMacOS.value
+      ? '~/Library/Application Support/ClaudeEnvManager/codex/profiles.json'
+      : '%APPDATA%\\ClaudeEnvManager\\codex\\profiles.json'
+    return `全局配置：${codexStore.globalConfigPath || '~/.codex/config.toml'}（仅显式勾选时同步）；启动器方案：${codexStore.profilesPath || launcherPath}；auth.json 只读。`
   }
   return `唯一配置来源：${opencodeStore.globalConfigPath || '~/.config/opencode/opencode.jsonc'}；界面直接读取和保存该文件，只管理其中带 npm 的自定义 Provider，内置 Provider 保持不变。`
 })
@@ -170,9 +178,14 @@ const safeDiagnostic = computed(() => JSON.stringify(redactConfigRecord({
   configFormat: activeDescriptor.value.configFormat,
   source: sourceDescription.value,
   codex: workspaceStore.activeKind === 'codex' ? {
+    platform: codexStore.platform,
+    secretStorageKind: codexStore.secretStorageKind,
+    customGlobalSyncSupported: codexStore.customGlobalSyncSupported,
+    customGlobalKeySyncSupported: codexStore.customGlobalKeySyncSupported,
     profileName: appliedCodexProfile.value?.name || null,
     managedProfileName: appliedCodexProfile.value?.managedProfileName || null,
     globalProfileId: codexStore.globalProfileId,
+    globalProfileInSync: codexStore.globalProfileInSync,
     globalProfileName: globalCodexProfile.value?.name || null,
     authMode: appliedCodexProfile.value?.authMode || null,
     model: appliedCodexProfile.value?.model || null,

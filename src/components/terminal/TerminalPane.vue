@@ -10,7 +10,8 @@ import {
   createTerminalOutputWriter,
   type TerminalOutputWriter,
 } from '@/utils/codexTerminalOutput'
-import { encodeCodexConptyInput } from '@/utils/codexTerminalInput'
+import { encodeCodexTerminalInput } from '@/utils/codexTerminalInput'
+import { usePlatform } from '@/composables/usePlatform'
 
 const props = defineProps<{
   tabId: number
@@ -18,6 +19,7 @@ const props = defineProps<{
 }>()
 
 const store = useTerminalStore()
+const { isWindows, isMacOS } = usePlatform()
 const containerRef = ref<HTMLDivElement | null>(null)
 const initialized = ref(false)
 
@@ -125,7 +127,8 @@ function initTerminal() {
   const t = term
   term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
     if (e.type !== 'keydown') return true
-    if (e.ctrlKey && e.key === 'c') {
+    const clipboardModifier = isMacOS.value ? e.metaKey : e.ctrlKey
+    if (clipboardModifier && e.key.toLowerCase() === 'c') {
       const sel = t.getSelection()
       if (sel) {
         const ta = document.createElement('textarea')
@@ -138,14 +141,17 @@ function initTerminal() {
         t.clearSelection()
         return false
       }
+      if (isMacOS.value) return false
     }
-    if (e.ctrlKey && e.key === 'v') return false  // let xterm.js built-in paste handle it
+    if (clipboardModifier && e.key.toLowerCase() === 'v') return false  // let xterm.js built-in paste handle it
     return true
   })
 
   // Forward input to PTY
   term.onData((data) => {
-    const ptyData = cliKind === 'codex' ? encodeCodexConptyInput(data) : data
+    const ptyData = cliKind === 'codex'
+      ? encodeCodexTerminalInput(data, isWindows.value)
+      : data
     invoke('pty_write', { tabId: props.tabId, data: ptyData }).catch(() => {})
   })
 

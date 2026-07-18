@@ -20,7 +20,7 @@
       </div>
       <button class="right-sidebar__add" title="打开功能" @click="addMenuOpen = !addMenuOpen">+</button>
       <div v-if="addMenuOpen" class="right-sidebar__add-menu">
-        <button @click="openFile">📄 <span>文件</span><kbd>Ctrl+P</kbd></button>
+        <button @click="openFile">📄 <span>文件</span><kbd>{{ shortcutModifier }}+P</kbd></button>
         <button @click="openTerminal">🖥 <span>终端</span></button>
         <button @click="openBrowser">🌐 <span>浏览器</span></button>
       </div>
@@ -41,11 +41,14 @@ import { computed, defineComponent, h, ref, watch } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import { useTauriDrop, isInside } from '@/composables/useTauriDrop'
 import TerminalPane from '@/components/terminal/TerminalPane.vue'
+import { usePlatform } from '@/composables/usePlatform'
 
 const store = useProjectStore()
 const addMenuOpen = ref(false)
 const sidebarRef = ref<HTMLElement | null>(null)
 const activeTab = computed(() => store.activeSidebarTab)
+const { isMacOS } = usePlatform()
+const shortcutModifier = computed(() => isMacOS.value ? '⌘' : 'Ctrl')
 
 const props = defineProps<{
   width?: number
@@ -78,7 +81,7 @@ const ToolsPanel = defineComponent({
     return () => h('div', { class: 'tools-panel' }, [
       h('div', { class: 'tools-panel__section' }, [
         h('div', { class: 'tools-panel__title' }, '打开'),
-        h('button', { class: 'tools-panel__row', onClick: () => projectStore.openFile() }, ['📄 ', h('span', '文件'), h('kbd', 'Ctrl+P')]),
+        h('button', { class: 'tools-panel__row', onClick: () => projectStore.openFile() }, ['📄 ', h('span', '文件'), h('kbd', `${shortcutModifier.value}+P`)]),
         h('button', { class: 'tools-panel__row', onClick: () => projectStore.openSidebarTab('terminal') }, ['🖥 ', h('span', '终端')]),
         h('button', { class: 'tools-panel__row', onClick: () => projectStore.openSidebarTab('browser') }, ['🌐 ', h('span', '浏览器')]),
       ]),

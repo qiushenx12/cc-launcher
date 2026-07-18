@@ -5,12 +5,36 @@
         <header class="editor-header">
           <div>
             <div class="card-title">OpenCode 配置</div>
-            <p>{{ config.configPath || 'C:\\Users\\<用户>\\.config\\opencode\\opencode.jsonc' }}</p>
+            <p>{{ config.configPath || defaultConfigPath }}</p>
           </div>
           <button class="btn btn-secondary" type="button" :disabled="store.loading" @click="store.refreshConfig()">
             {{ store.loading ? '读取中…' : '重新读取' }}
           </button>
         </header>
+
+        <section
+          v-if="store.permissionStatus.supported && store.permissionStatus.requiresRepair"
+          class="permission-setup"
+          role="alert"
+        >
+          <div>
+            <strong>首次使用需要获取 OpenCode 目录权限</strong>
+            <p>检测到以下目录不可写或不属于当前用户：</p>
+            <code v-for="path in store.permissionStatus.blockedDirectories" :key="path">{{ path }}</code>
+            <p>点击按钮后 macOS 会显示管理员授权窗口。启动器只会创建并修复三个 OpenCode 专属目录，不会修改整个用户目录。</p>
+          </div>
+          <button
+            class="btn btn-primary"
+            type="button"
+            :disabled="store.permissionRepairing"
+            @click="store.repairPermissions()"
+          >
+            {{ store.permissionRepairing ? '等待 macOS 授权…' : '一键修复权限' }}
+          </button>
+        </section>
+        <p v-else-if="store.permissionError" class="permission-check-error">
+          {{ store.permissionError }}
+        </p>
 
         <ModelField
           v-model="config.model"
@@ -83,7 +107,12 @@
             placeholder="保存到 OpenCode auth.json"
           />
           <div class="key-action-row">
-            <button class="btn btn-secondary" type="button" @click="store.saveProviderKey(provider)">
+            <button
+              class="btn btn-secondary"
+              type="button"
+              :disabled="store.permissionStatus.requiresRepair"
+              @click="store.saveProviderKey(provider)"
+            >
               保存 Key
             </button>
             <span>单独保存到 auth.json；启用或禁用 Provider 都不会清空它</span>
@@ -102,13 +131,19 @@
               >
                 {{ connectionStateLabel(provider) }}
               </span>
-              <button class="btn btn-primary" type="button" @click="store.saveConnection(provider)">
+              <button
+                class="btn btn-primary"
+                type="button"
+                :disabled="store.permissionStatus.requiresRepair"
+                @click="store.saveConnection(provider)"
+              >
                 {{ connectionButtonLabel(provider) }}
               </button>
               <button
                 v-if="store.connectionState(provider) !== 'disabled'"
                 class="btn btn-secondary"
                 type="button"
+                :disabled="store.permissionStatus.requiresRepair"
                 @click="store.disconnectConnection(provider)"
               >
                 禁用
@@ -127,6 +162,9 @@
               placeholder="可填写密钥或 {env:变量名}"
             />
             <p>这是 <code>options.apiKey</code>，可在不使用 OpenCode 连接凭据时作为替代。</p>
+            <p v-if="isPlaintextApiKey(provider.apiKey)" class="inline-key-warning">
+              当前值会以明文写入配置文件；Unix 上启动器会将该配置文件权限收紧为仅当前用户可读写。优先使用 auth.json 或 <code>{env:变量名}</code>。
+            </p>
           </details>
 
           <section class="models-section">
@@ -202,7 +240,12 @@
         </article>
 
         <div class="action-row">
-          <button class="btn btn-primary" type="button" :disabled="!store.isDirty || store.saving" @click="store.saveConfig()">
+          <button
+            class="btn btn-primary"
+            type="button"
+            :disabled="!store.isDirty || store.saving || store.permissionStatus.requiresRepair"
+            @click="store.saveConfig()"
+          >
             {{ store.saving ? '保存并校验中…' : store.isDirty ? '保存配置' : '已同步' }}
           </button>
           <button class="btn btn-secondary" type="button" @click="openConfigDirectory">打开配置目录</button>
@@ -239,10 +282,15 @@ import { useConfigWorkspaceStore } from '@/stores/configWorkspace'
 import ConfigStatusBanner from '@/components/config/ConfigStatusBanner.vue'
 import ModelField from '@/components/config/ModelField.vue'
 import SecretField from '@/components/config/SecretField.vue'
+import { usePlatform } from '@/composables/usePlatform'
 
 const store = useOpencodeConfigStore()
 const workspaceStore = useConfigWorkspaceStore()
+const { isWindows } = usePlatform()
 const config = computed(() => store.editingConfig)
+const defaultConfigPath = computed(() => isWindows.value
+  ? 'C:\\Users\\<用户>\\.config\\opencode\\opencode.jsonc'
+  : '~/.config/opencode/opencode.jsonc')
 const modelDrafts = reactive<Record<string, string>>({})
 const statusTone = computed<'info' | 'success' | 'warning' | 'error'>(() => {
   if (/失败|错误|无效|不存在|已被其它程序修改/.test(store.statusMessage)) return 'error'
@@ -262,6 +310,13 @@ function connectionButtonLabel(provider: OpencodeGlobalProvider) {
   if (state === 'connected') return '重新连接'
   if (state === 'disabled') return '重新启用'
   return '启用'
+}
+
+function isPlaintextApiKey(value: string) {
+  const key = value.trim()
+  return Boolean(key)
+    && !(key.startsWith('{env:') && key.endsWith('}'))
+    && !(key.startsWith('{file:') && key.endsWith('}'))
 }
 
 function addModel(provider: OpencodeGlobalProvider) {
@@ -298,6 +353,7 @@ async function openConfigDirectory() {
 }
 
 onMounted(() => {
+  store.checkPermissions().catch(() => {})
   store.loadConfig(true).catch(() => {})
 })
 </script>
@@ -308,6 +364,12 @@ onMounted(() => {
 .config-editor, .source-note { max-width: 900px; margin: 0 auto 12px; }
 .editor-header, .provider-title, .provider-header, .models-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .editor-header { margin-bottom: 10px; }
+.permission-setup { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 0 0 12px; padding: 12px; border: 1px solid var(--warning, #b26a00); border-radius: var(--radius-md); background: color-mix(in srgb, var(--warning, #b26a00) 10%, transparent); }
+.permission-setup > div { min-width: 0; }
+.permission-setup p { margin: 4px 0; color: var(--text-secondary); font-size: var(--font-size-small); line-height: 1.45; }
+.permission-setup code { display: block; margin-top: 2px; overflow-wrap: anywhere; }
+.permission-setup .btn { flex: 0 0 auto; }
+.permission-check-error { margin: 0 0 12px; color: var(--danger, #d96c6c); font-size: var(--font-size-small); }
 .editor-header p, .provider-title span, .provider-header span, .models-header span, .source-note p { color: var(--text-secondary); font-size: var(--font-size-small); }
 .editor-header p { margin: 4px 0 0; overflow-wrap: anywhere; }
 .field-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
@@ -325,6 +387,7 @@ onMounted(() => {
 .advanced-options { margin: 5px 0 4px 120px; color: var(--text-secondary); font-size: var(--font-size-small); }
 .advanced-options summary { cursor: pointer; user-select: none; }
 .advanced-options p { margin: 2px 0 0; }
+.advanced-options .inline-key-warning { color: var(--warning, #b26a00); }
 .advanced-options :deep(.field-label) { width: 100px; }
 .provider-title { margin: 16px 0 8px; padding-top: 12px; border-top: 1px solid var(--separator); }
 .provider-title > div, .provider-header > div, .models-header > div { display: flex; flex-direction: column; gap: 2px; }

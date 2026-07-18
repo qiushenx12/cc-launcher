@@ -45,7 +45,7 @@ pub async fn install_claude_code_via_npm() -> Result<ClaudeCodeInstallResult, St
 
 pub(crate) fn locate_claude_executable() -> Option<String> {
     // Try PATH first
-    if let Ok(path) = which::which("claude") {
+    if let Some(path) = crate::platform_env::locate_executable("claude") {
         return Some(path.to_string_lossy().to_string());
     }
 
@@ -134,6 +134,7 @@ fn inspect_claude_code() -> ClaudeCodeCheckResult {
 #[allow(unused_mut)]
 fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
+    crate::platform_env::apply_effective_path(&mut command);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -144,9 +145,9 @@ fn hidden_command(program: impl AsRef<OsStr>) -> Command {
 }
 
 fn run_npm_install() -> Result<ClaudeCodeInstallResult, String> {
-    let npm = which::which("npm")
-        .or_else(|_| which::which("npm.cmd"))
-        .map_err(|_| "未检测到 npm。请确认 Node.js 安装完整后重试。".to_string())?;
+    let npm = crate::platform_env::locate_executable("npm")
+        .or_else(|| crate::platform_env::locate_executable("npm.cmd"))
+        .ok_or_else(|| "未检测到 npm。请确认 Node.js 安装完整后重试。".to_string())?;
 
     let output = hidden_command(&npm)
         .args(["install", "-g", "@anthropic-ai/claude-code"])
@@ -212,6 +213,9 @@ pub fn launch_claude(
         env.insert(k.clone(), v.clone());
     }
     cmd.envs(&env);
+    if !env_vars.contains_key("PATH") {
+        crate::platform_env::apply_effective_path(&mut cmd);
+    }
 
     if let Some(dir) = &cwd {
         if !dir.is_empty() {

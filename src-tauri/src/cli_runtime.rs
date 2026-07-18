@@ -81,6 +81,7 @@ struct CodexThreadListResponse {
 #[allow(unused_mut)]
 fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
+    crate::platform_env::apply_effective_path(&mut command);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -113,7 +114,7 @@ pub fn locate_cli(kind: CliKind) -> Option<PathBuf> {
             return Some(PathBuf::from(path));
         }
     }
-    which::which(command_name(kind)).ok()
+    crate::platform_env::locate_executable(command_name(kind))
 }
 
 fn inspect_cli(kind: CliKind) -> CliStatus {
@@ -543,8 +544,7 @@ pub async fn discover_opencode_projects() -> Result<OpenCodeProjectDiscovery, St
                     }
                 },
                 None => {
-                    warning =
-                        Some("找不到可用于读取 OpenCode 全局项目的 Windows 根目录。".to_string());
+                    warning = Some("找不到可用于读取 OpenCode 全局项目的系统根目录。".to_string());
                 }
             }
         }
@@ -590,11 +590,20 @@ fn query_opencode_sessions(cwd: &Path, max_count: u32) -> Result<Vec<OpenCodeSes
 }
 
 fn opencode_global_probe_dir() -> Option<PathBuf> {
-    std::env::var_os("SystemDrive")
-        .map(PathBuf::from)
-        .map(|drive| PathBuf::from(format!("{}\\", drive.display())))
-        .filter(|path| path.is_dir())
-        .or_else(|| dirs::home_dir().filter(|path| path.is_dir()))
+    #[cfg(windows)]
+    {
+        return std::env::var_os("SystemDrive")
+            .map(PathBuf::from)
+            .map(|drive| PathBuf::from(format!("{}\\", drive.display())))
+            .filter(|path| path.is_dir())
+            .or_else(|| dirs::home_dir().filter(|path| path.is_dir()));
+    }
+
+    #[cfg(not(windows))]
+    {
+        let root = PathBuf::from("/");
+        root.is_dir().then_some(root)
+    }
 }
 
 fn merge_opencode_discovered_projects(
@@ -630,22 +639,54 @@ fn merge_opencode_discovered_projects(
 }
 
 fn normalize_path(path: &str) -> String {
-    path.trim()
-        .trim_end_matches(['\\', '/'])
-        .replace('/', "\\")
-        .to_lowercase()
+    #[cfg(windows)]
+    {
+        return path
+            .trim()
+            .trim_end_matches(['\\', '/'])
+            .replace('/', "\\")
+            .to_lowercase();
+    }
+
+    #[cfg(not(windows))]
+    {
+        if path == "/" {
+            "/".to_string()
+        } else {
+            path.trim_end_matches('/').to_string()
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn path_comparison_is_case_and_separator_insensitive_on_windows() {
         assert_eq!(
             normalize_path(r"D:\Work\Demo\\"),
             normalize_path("d:/work/demo")
         );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_path_comparison_preserves_case_unicode_and_root() {
+        assert_ne!(normalize_path("/Users/Demo"), normalize_path("/Users/demo"));
+        assert_eq!(normalize_path("/Users/项目 space/"), "/Users/项目 space");
+        assert_eq!(
+            normalize_path("/Users/ leading /trailing "),
+            "/Users/ leading /trailing "
+        );
+        assert_eq!(normalize_path("/"), "/");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn opencode_global_probe_uses_unix_root() {
+        assert_eq!(opencode_global_probe_dir(), Some(PathBuf::from("/")));
     }
 
     #[test]
@@ -673,8 +714,12 @@ mod tests {
         .expect("session sample should parse");
 
         let discovered = merge_opencode_discovered_projects(&projects, &sessions);
+        #[cfg(windows)]
         assert_eq!(discovered.len(), 3);
+        #[cfg(not(windows))]
+        assert_eq!(discovered.len(), 4);
         assert!(discovered.iter().all(|project| project.worktree != "/"));
+        #[cfg(windows)]
         assert_eq!(
             discovered
                 .iter()
@@ -683,6 +728,15 @@ mod tests {
                 })
                 .count(),
             1
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            discovered
+                .iter()
+                .filter(|project| project.worktree.to_ascii_lowercase().contains("global-one"))
+                .count(),
+            2,
+            "Unix must not merge differently-cased native paths",
         );
     }
 

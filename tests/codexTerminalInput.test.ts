@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { encodeCodexConptyInput } from '../src/utils/codexTerminalInput.ts'
+import {
+  encodeCodexConptyInput,
+  encodeCodexTerminalInput,
+} from '../src/utils/codexTerminalInput.ts'
 
 const ESC = '\x1b'
 
@@ -24,4 +27,19 @@ test('bracketed paste markers remain intact around encoded quotes', () => {
     encodeCodexConptyInput(`${ESC}[200~a’b${ESC}[201~`),
     `${ESC}[200~a${ESC}[0;0;8217;1;0;1_${ESC}[0;0;8217;0;0;1_b${ESC}[201~`,
   )
+})
+
+test('macOS Codex input passes UTF-8, IME text, and bracketed paste through unchanged', () => {
+  const inputs = [
+    '中文组合输入‘智能引号’',
+    `${ESC}[200~粘贴“原文”${ESC}[201~`,
+    'e\u0301',
+  ]
+  for (const input of inputs) {
+    assert.equal(encodeCodexTerminalInput(input, false), input)
+  }
+})
+
+test('Windows Codex input retains the ConPTY workaround', () => {
+  assert.notEqual(encodeCodexTerminalInput('“', true), '“')
 })

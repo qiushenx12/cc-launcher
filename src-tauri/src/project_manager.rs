@@ -110,11 +110,20 @@ fn inferred_session_kind(id: &str) -> Option<(CliKind, String)> {
 }
 
 fn normalized_project_key(kind: CliKind, path: &str) -> String {
+    #[cfg(windows)]
     let normalized = path
         .trim()
         .trim_end_matches(['\\', '/'])
         .replace('/', "\\")
         .to_lowercase();
+    #[cfg(not(windows))]
+    let normalized = {
+        if path == "/" {
+            "/".to_string()
+        } else {
+            path.trim_end_matches('/').to_string()
+        }
+    };
     format!("{}:{normalized}", kind.as_str())
 }
 
@@ -558,6 +567,24 @@ pub fn save_text_file(path: String, content: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_project_keys_preserve_case_spaces_and_unicode() {
+        assert_ne!(
+            normalized_project_key(CliKind::Opencode, "/Users/Demo/项目"),
+            normalized_project_key(CliKind::Opencode, "/Users/demo/项目"),
+        );
+        assert_eq!(
+            normalized_project_key(CliKind::Opencode, "/Users/me/My Project/"),
+            "opencode:/Users/me/My Project",
+        );
+        assert_eq!(
+            normalized_project_key(CliKind::Opencode, "/Users/me/trailing "),
+            "opencode:/Users/me/trailing ",
+        );
+        assert_eq!(normalized_project_key(CliKind::Opencode, "/"), "opencode:/",);
+    }
 
     #[test]
     fn repairs_misclassified_cli_projects_without_cross_talk() {

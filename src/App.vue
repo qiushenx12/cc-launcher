@@ -320,6 +320,7 @@ import { useTerminalStore } from './stores/terminal'
 import { useProjectStore } from './stores/project'
 import { useCliRuntimeStore } from './stores/cliRuntime'
 import { useConfigWorkspaceStore } from './stores/configWorkspace'
+import { usePlatform } from './composables/usePlatform'
 import {
   CLI_DESCRIPTORS,
   isCliKind,
@@ -352,6 +353,7 @@ const terminalStore = useTerminalStore()
 const projectStore = useProjectStore()
 const cliRuntimeStore = useCliRuntimeStore()
 const configWorkspaceStore = useConfigWorkspaceStore()
+const { isWindows, isMacOS } = usePlatform()
 const terminalManagerRef = ref<InstanceType<typeof TerminalManager> | null>(null)
 const configSidebarCollapsed = ref(false)
 const dependencyState = ref<DependencyGateState>('checking')
@@ -396,13 +398,21 @@ const cliGateProgressText = computed(() => cliWorkspacePreparing.value
   ? `正在整理 ${activeCliLabel.value} 的项目与会话。`
   : `正在检查 ${activeCliLabel.value}。`)
 const cliInstallHint = computed(() => {
-  if (activeCliKind.value === 'claude') return 'npm 安装命令：npm install -g @anthropic-ai/claude-code'
-  if (activeCliKind.value === 'codex') return 'npm 安装命令：npm install -g @openai/codex'
-  return 'npm 安装命令：npm install -g opencode-ai'
+  const restart = isMacOS.value ? '；安装后请完全退出并重新打开应用' : ''
+  if (activeCliKind.value === 'claude') return `npm 安装命令：npm install -g @anthropic-ai/claude-code${restart}`
+  if (activeCliKind.value === 'codex') {
+    return isMacOS.value
+      ? `Homebrew：brew install --cask codex；或 npm install -g @openai/codex${restart}`
+      : 'npm 安装命令：npm install -g @openai/codex'
+  }
+  return isMacOS.value
+    ? `Homebrew：brew install anomalyco/tap/opencode；或 npm install -g opencode-ai${restart}`
+    : 'npm 安装命令：npm install -g opencode-ai'
 })
 const activeDependencyName = computed(() => dependencyResult.value?.dependency === 'git' ? 'Git' : 'Node.js')
 const canInstallDependency = computed(() => {
-  return dependencyState.value === 'missing' || dependencyState.value === 'unsupported'
+  return isWindows.value
+    && (dependencyState.value === 'missing' || dependencyState.value === 'unsupported')
 })
 const dependencyGateTitle = computed(() => {
   if (dependencyState.value === 'checking') return '正在检查运行环境'
@@ -852,7 +862,8 @@ function cycleProjectSession() {
 // ── Global keyboard shortcuts ──────────────────────────────────────────────
 function onKeyDown(e: KeyboardEvent) {
   if (!appReady.value) return
-  if (!e.ctrlKey) return
+  const primaryModifier = isMacOS.value ? e.metaKey : e.ctrlKey
+  if (!primaryModifier) return
 
   if (isCliKind(mainTab.value)) {
     if (activeCliStatus.value?.state !== 'ready') return

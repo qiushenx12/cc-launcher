@@ -106,9 +106,9 @@ async fn check_dependency(kind: DependencyKind) -> DependencyCheckResult {
 }
 
 fn inspect_dependency(kind: DependencyKind) -> DependencyCheckResult {
-    let path = match which::which(kind.executable()) {
-        Ok(path) => path,
-        Err(_) => {
+    let path = match crate::platform_env::locate_executable(kind.executable()) {
+        Some(path) => path,
+        None => {
             return DependencyCheckResult {
                 dependency: kind.key(),
                 status: DependencyStatus::Missing,
@@ -235,6 +235,7 @@ fn run_winget_install(
 #[allow(unused_mut)]
 fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
+    crate::platform_env::apply_effective_path(&mut command);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

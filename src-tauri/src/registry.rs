@@ -130,23 +130,15 @@ pub fn apply_env_vars_impl(vars: HashMap<String, String>, scope: String) -> Resu
     }
 }
 
+#[cfg(windows)]
 pub(crate) fn read_user_env_var(name: &str) -> Result<Option<String>, String> {
-    #[cfg(windows)]
-    {
-        let key = RegKey::predef(HKEY_CURRENT_USER)
-            .open_subkey(r"Environment")
-            .map_err(|error| format!("无法读取当前用户环境变量：{error}"))?;
-        match key.get_value::<String, _>(name) {
-            Ok(value) => Ok(Some(value)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(format!("无法读取环境变量 '{name}'：{error}")),
-        }
-    }
-
-    #[cfg(not(windows))]
-    {
-        let _ = name;
-        Err("Registry operations are only supported on Windows".to_string())
+    let key = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Environment")
+        .map_err(|error| format!("无法读取当前用户环境变量：{error}"))?;
+    match key.get_value::<String, _>(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("无法读取环境变量 '{name}'：{error}")),
     }
 }
 

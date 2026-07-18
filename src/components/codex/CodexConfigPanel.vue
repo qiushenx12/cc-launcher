@@ -105,9 +105,14 @@
           </div>
 
           <SecretField
+            :key="profile.id || 'new-codex-profile'"
             v-model="store.apiKeyInput"
             label="API Key"
-            :placeholder="profile.hasStoredApiKey ? '留空保留已加密保存的 Key' : '可留空并使用现有环境变量'"
+            :has-stored-value="profile.hasStoredApiKey && !store.clearStoredApiKey"
+            :stored-value-revealed="store.storedApiKeyRevealed"
+            :loading-stored-value="store.apiKeyRevealing"
+            :placeholder="profile.hasStoredApiKey ? '已安全保存；点击显示后按需读取' : '可留空并使用现有环境变量'"
+            @reveal-stored-value="store.revealApiKey()"
           />
 
           <div class="field-row">
@@ -162,7 +167,7 @@
         <p class="field-help">
           {{ profile.authMode === 'official'
             ? '复用 CLI、桌面端和 IDE 的 Codex 官方登录，不读取、覆盖或清除 auth.json。'
-            : 'Key 默认只使用 DPAPI 加密保存，并在启动该 CodeX profile 时注入。' }}
+            : secretStorageDescription }}
         </p>
 
         <hr class="separator" style="margin: 12px 0 10px;" />
@@ -170,21 +175,45 @@
         <div class="scope-row">
           <span class="scope-label">应用范围</span>
           <label class="radio-label">
-            <input v-model="store.syncToGlobal" type="checkbox" />
+            <input
+              v-model="store.syncToGlobal"
+              type="checkbox"
+              :disabled="globalApplied || (profile.authMode === 'custom' && !store.customGlobalSyncSupported)"
+            />
             同时同步到全局配置
           </label>
-          <span class="scope-hint">不勾选时只改变启动器当前方案</span>
+          <span class="scope-hint">
+            {{ globalApplied
+              ? '当前方案已经同步到全局；选择另一方案同步时会替换它'
+              : '不勾选时只改变启动器当前方案' }}
+          </span>
         </div>
+        <p v-if="profile.authMode === 'custom' && !store.customGlobalSyncSupported" class="scope-warning">
+          macOS 不会把第三方 Key 写入 shell、LaunchAgent 或 Claude 配置。启动器会从 Keychain 读取，并且只注入新启动的 CodeX 子进程；第三方全局同步不可用。
+        </p>
         <p v-if="store.syncToGlobal" class="scope-warning">
-          将更新 {{ store.globalConfigPath || '~/.codex/config.toml' }}；第三方方案还会把
-          <code>{{ profile.envKey || 'API Key 环境变量' }}</code> 写入当前用户环境。Windows 用户环境变量不是密文存储；外部终端和 CodeX 桌面端需重启后读取新环境。
+          <template v-if="profile.authMode === 'official'">
+            将更新 {{ store.globalConfigPath || '~/.codex/config.toml' }}；auth.json 保持只读。
+          </template>
+          <template v-else-if="store.customGlobalKeySyncSupported">
+            将更新 {{ store.globalConfigPath || '~/.codex/config.toml' }}；并把
+            <code>{{ profile.envKey || 'API Key 环境变量' }}</code> 写入 Windows 当前用户环境。该环境变量不是密文存储；外部终端和 CodeX 桌面端需重启后读取新环境。
+          </template>
+          <template v-else-if="store.secretStorageKind === 'macos_keychain' && profile.hasStoredApiKey">
+            将把第三方 Provider 和模型同步到 {{ store.globalConfigPath || '~/.codex/config.toml' }}，并配置 Codex 的命令式认证从 Keychain 读取 Key。明文不会写入 TOML 或 shell；外部 Codex 首次读取时 macOS 可能请求 Keychain 授权。
+          </template>
+          <template v-else>
+            将把第三方 Provider、模型和 <code>env_key</code> 同步到
+            {{ store.globalConfigPath || '~/.codex/config.toml' }}。Key 仍只保存在 Keychain，不会写入 TOML 或 shell；启动器内会自动注入，外部 CodeX 需要自行设置
+            <code>{{ profile.envKey || 'API Key 环境变量' }}</code>，或配置 Codex 命令式认证。
+          </template>
         </p>
 
         <div class="action-row">
           <button
             class="btn btn-primary"
             type="button"
-            :disabled="!store.isDirty || store.saving"
+            :disabled="!store.isDirty || store.saving || store.apiKeyRevealing"
             @click="store.saveProfile()"
           >
             {{ store.saving ? '保存并校验中…' : store.isDirty ? '保存配置' : '已保存' }}
@@ -221,7 +250,7 @@
       <section class="card codex-source-note">
         <div class="card-title">配置边界</div>
         <p>全局配置：{{ store.globalConfigPath || '~/.codex/config.toml' }}</p>
-        <p>启动器索引：{{ store.profilesPath || '%APPDATA%\\ClaudeEnvManager\\codex\\profiles.json' }}</p>
+        <p>启动器索引：{{ store.profilesPath || defaultProfilesPath }}</p>
         <p>启动器通过独立的 <code>--profile {{ profile.managedProfileName || 'cc-launcher-…' }}</code> 启动；只有主动勾选“同时同步到全局配置”才修改全局文件。</p>
         <p>CodeX 优先级：CLI 参数 → 项目 <code>.codex/config.toml</code> → 当前启动器 profile → 全局配置。</p>
       </section>
@@ -230,16 +259,30 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { useCodexConfigStore } from '@/stores/codexConfig'
 import { useConfigWorkspaceStore } from '@/stores/configWorkspace'
 import ConfigStatusBanner from '@/components/config/ConfigStatusBanner.vue'
 import ModelField from '@/components/config/ModelField.vue'
 import SecretField from '@/components/config/SecretField.vue'
+import { usePlatform } from '@/composables/usePlatform'
 
 const store = useCodexConfigStore()
 const workspaceStore = useConfigWorkspaceStore()
+const { isMacOS } = usePlatform()
 const profile = computed(() => store.editingProfile)
+const defaultProfilesPath = computed(() => isMacOS.value
+  ? '~/Library/Application Support/ClaudeEnvManager/codex/profiles.json'
+  : '%APPDATA%\\ClaudeEnvManager\\codex\\profiles.json')
+const secretStorageDescription = computed(() => store.secretStorageKind === 'macos_keychain'
+  ? 'Key 使用 macOS Keychain 按 profile 隔离保存；Codex 通过命令式认证按需读取，明文不会写入配置文件。'
+  : 'Key 使用 Windows DPAPI 加密保存，并且只注入启动器创建的 CodeX 子进程。')
+watch(
+  () => [profile.value.authMode, store.customGlobalSyncSupported] as const,
+  ([authMode, supported]) => {
+    if (authMode === 'custom' && !supported) store.syncToGlobal = false
+  },
+)
 const reasoningEfforts = ['minimal', 'low', 'medium', 'high', 'xhigh', 'ultra', 'max']
 const appApplied = computed(() => Boolean(
   profile.value.id && store.activeProfileId === profile.value.id,
@@ -251,13 +294,17 @@ const applyDisabled = computed(() => (
   !profile.value.id
   || store.isDirty
   || store.applying
-  || (appApplied.value && (!store.syncToGlobal || globalApplied.value))
+  || store.apiKeyRevealing
+  || (appApplied.value && (!store.syncToGlobal
+    || (globalApplied.value && store.globalProfileInSync)))
 ))
 const applyButtonLabel = computed(() => {
   if (store.applying) return '应用并校验中…'
   if (!profile.value.id || store.isDirty) return '请先保存'
   if (store.syncToGlobal) {
-    if (appApplied.value && globalApplied.value) return '全局应用中'
+    if (appApplied.value && globalApplied.value) {
+      return store.globalProfileInSync ? '全局应用中' : '重新同步全局'
+    }
     return '应用并同步全局'
   }
   if (appApplied.value) return '应用中'
@@ -272,8 +319,11 @@ const statusTone = computed<'info' | 'success' | 'warning' | 'error'>(() => {
 function profileStateLabel(profileId: string) {
   const active = store.activeProfileId === profileId
   const global = store.globalProfileId === profileId
+  const globalStale = global && !store.globalProfileInSync
+  if (active && globalStale) return '应用中 · 全局待更新'
   if (active && global) return '应用中 · 全局'
   if (active) return '应用中'
+  if (globalStale) return '全局待更新'
   if (global) return '全局'
   return ''
 }

@@ -8,9 +8,12 @@ pub mod config_store;
 pub mod dependency_manager;
 pub mod env_applier;
 pub mod file_transaction;
+#[cfg(target_os = "macos")]
+pub mod macos_keychain;
 pub mod model_fetcher;
 pub mod opencode_config;
 pub mod persistent_state;
+pub mod platform_env;
 pub mod project_manager;
 pub mod pty;
 pub mod registry;
@@ -68,12 +71,15 @@ pub fn run() {
             cli_runtime::list_opencode_sessions,
             // CodeX managed configuration
             codex_config::load_codex_profiles,
+            codex_config::reveal_codex_profile_api_key,
             codex_config::fetch_codex_models,
             codex_config::save_codex_profile,
             codex_config::apply_codex_profile,
             codex_config::delete_codex_profile,
             codex_config::resolve_codex_profile,
             // OpenCode global JSONC synchronization
+            opencode_config::check_opencode_permissions,
+            opencode_config::repair_opencode_permissions,
             opencode_config::load_opencode_global_config,
             opencode_config::save_opencode_global_config,
             opencode_config::fetch_opencode_global_models,
