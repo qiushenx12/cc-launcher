@@ -10,6 +10,7 @@ node_modules/
 dist/
 coverage/
 src-tauri/target/
+src-tauri/target-animated-build/
 src-tauri/release-bundle/
 
 # Python cache
