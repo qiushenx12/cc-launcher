@@ -57,7 +57,7 @@ export interface CodexProfilesPayload {
   authStatus: CodexAuthStatus
   customGlobalSyncSupported: boolean
   customGlobalKeySyncSupported: boolean
-  secretStorageKind: 'windows_dpapi' | 'macos_keychain' | 'unsupported'
+  secretStorageKind: 'windows_dpapi' | 'macos_plaintext' | 'unsupported'
   platform: string
 }
 

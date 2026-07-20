@@ -12,7 +12,10 @@ use toml_edit::{Array, Value as TomlValue};
 use url::Url;
 use uuid::Uuid;
 
-use crate::file_transaction::{restore_json_backup_if_missing, write_json_atomic};
+use crate::file_transaction::{
+    restore_json_backup_if_missing, restore_private_json_backup_if_missing, write_json_atomic,
+    write_private_json_atomic,
+};
 use crate::model_fetcher;
 use crate::persistent_state::{
     load_profile_index_state, save_profile_index_state, ProfileIndexState,
@@ -207,6 +210,11 @@ fn credentials_dir() -> Result<PathBuf, String> {
     Ok(codex_data_dir()?.join("credentials"))
 }
 
+#[cfg(target_os = "macos")]
+fn plaintext_credentials_path() -> Result<PathBuf, String> {
+    Ok(codex_data_dir()?.join("credentials.json"))
+}
+
 fn global_env_path() -> Result<PathBuf, String> {
     Ok(codex_data_dir()?.join("global-env.bin"))
 }
@@ -261,7 +269,7 @@ fn secret_storage_kind() -> &'static str {
     }
     #[cfg(target_os = "macos")]
     {
-        return "macos_keychain";
+        return "macos_plaintext";
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     "unsupported"
@@ -384,38 +392,37 @@ fn remove_provider(document: &mut DocumentMut, provider_id: &str) {
     }
 }
 
-fn uses_keychain_command_auth(profile: &CodexProfile) -> bool {
+fn uses_plaintext_command_auth(profile: &CodexProfile) -> bool {
     cfg!(target_os = "macos")
         && profile.auth_mode == CodexAuthMode::Custom
         && profile.has_stored_api_key
 }
 
-fn configure_provider_credentials(provider: &mut Table, profile: &CodexProfile) {
+fn configure_provider_credentials(
+    provider: &mut Table,
+    profile: &CodexProfile,
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    if uses_keychain_command_auth(profile) {
+    if uses_plaintext_command_auth(profile) {
         provider.remove("env_key");
         let mut args = Array::new();
-        for argument in [
-            "find-generic-password",
-            "-s",
-            crate::macos_keychain::SERVICE,
-            "-a",
-            profile.id.as_str(),
-            "-w",
-        ] {
+        let credentials_path = plaintext_credentials_path()?;
+        for argument in ["-extract", profile.id.as_str(), "raw"] {
             args.push(argument);
         }
+        args.push(credentials_path.to_string_lossy().as_ref());
         let mut auth = Table::new();
-        auth["command"] = value("/usr/bin/security");
+        auth["command"] = value("/usr/bin/plutil");
         auth["args"] = Item::Value(TomlValue::Array(args));
         auth["timeout_ms"] = value(10_000_i64);
         auth["refresh_interval_ms"] = value(0_i64);
         provider["auth"] = Item::Table(auth);
-        return;
+        return Ok(());
     }
 
     provider["env_key"] = value(&profile.env_key);
     provider.remove("auth");
+    Ok(())
 }
 
 fn build_profile_toml(
@@ -467,7 +474,7 @@ fn build_profile_toml(
             provider["name"] = value(&profile.provider_name);
             provider["base_url"] = value(&profile.base_url);
             provider["wire_api"] = value("responses");
-            configure_provider_credentials(provider, profile);
+            configure_provider_credentials(provider, profile)?;
             provider.remove("requires_openai_auth");
             provider.remove("experimental_bearer_token");
         }
@@ -701,7 +708,8 @@ fn platform_read_profile_secret(profile_id: &str) -> Result<Option<String>, Stri
 
     #[cfg(target_os = "macos")]
     {
-        crate::macos_keychain::read(profile_id)
+        let credentials = load_plaintext_credentials()?;
+        Ok(credentials.get(profile_id).cloned())
     }
 
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -725,10 +733,12 @@ fn platform_write_profile_secret(profile_id: &str, secret: &str) -> Result<(), S
 
     #[cfg(target_os = "macos")]
     {
-        crate::macos_keychain::write(profile_id, secret)?;
-        return match crate::macos_keychain::read(profile_id)? {
+        let mut credentials = load_plaintext_credentials()?;
+        credentials.insert(profile_id.to_string(), secret.to_string());
+        save_plaintext_credentials(&credentials)?;
+        return match load_plaintext_credentials()?.get(profile_id) {
             Some(verified) if verified == secret => Ok(()),
-            _ => Err("CodeX Keychain 凭据写入后回读不一致".to_string()),
+            _ => Err("CodeX 明文凭据写入后回读不一致".to_string()),
         };
     }
 
@@ -750,9 +760,11 @@ fn platform_delete_profile_secret(profile_id: &str) -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     {
-        crate::macos_keychain::delete(profile_id)?;
-        if crate::macos_keychain::read(profile_id)?.is_some() {
-            Err("CodeX Keychain 凭据删除后仍然存在".to_string())
+        let mut credentials = load_plaintext_credentials()?;
+        credentials.remove(profile_id);
+        save_plaintext_credentials(&credentials)?;
+        if load_plaintext_credentials()?.contains_key(profile_id) {
+            Err("CodeX 明文凭据删除后仍然存在".to_string())
         } else {
             Ok(())
         }
@@ -763,6 +775,37 @@ fn platform_delete_profile_secret(profile_id: &str) -> Result<(), String> {
         let _ = profile_id;
         Err("当前平台没有可用的 CodeX 安全凭据存储".to_string())
     }
+}
+
+#[cfg(target_os = "macos")]
+fn load_plaintext_credentials_from(path: &Path) -> Result<BTreeMap<String, String>, String> {
+    restore_private_json_backup_if_missing(path, "CodeX 明文凭据")?;
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let raw =
+        fs::read_to_string(path).map_err(|error| format!("无法读取 CodeX 明文凭据：{error}"))?;
+    serde_json::from_str(&raw).map_err(|error| format!("CodeX 明文凭据无法解析：{error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn save_plaintext_credentials_to(
+    path: &Path,
+    credentials: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let json = serde_json::to_vec_pretty(credentials)
+        .map_err(|error| format!("无法序列化 CodeX 明文凭据：{error}"))?;
+    write_private_json_atomic(path, &json, "CodeX 明文凭据")
+}
+
+#[cfg(target_os = "macos")]
+fn load_plaintext_credentials() -> Result<BTreeMap<String, String>, String> {
+    load_plaintext_credentials_from(&plaintext_credentials_path()?)
+}
+
+#[cfg(target_os = "macos")]
+fn save_plaintext_credentials(credentials: &BTreeMap<String, String>) -> Result<(), String> {
+    save_plaintext_credentials_to(&plaintext_credentials_path()?, credentials)
 }
 
 fn read_profile_secret(profile_id: &str) -> Result<Option<String>, String> {
@@ -1601,7 +1644,7 @@ pub fn resolve_codex_profile(profile_id: String) -> Result<CodexLaunchContext, S
         write_toml_atomic(&profile_path, rendered_toml.as_bytes())?;
     }
     let mut env_vars = BTreeMap::new();
-    if profile.auth_mode == CodexAuthMode::Custom && !uses_keychain_command_auth(&profile) {
+    if profile.auth_mode == CodexAuthMode::Custom && !uses_plaintext_command_auth(&profile) {
         let api_key = resolve_profile_api_key(&profile)?;
         env_vars.insert(profile.env_key.clone(), api_key);
     }
@@ -1683,15 +1726,58 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_reports_keychain_and_disables_custom_global_secret_sync() {
-        assert_eq!(secret_storage_kind(), "macos_keychain");
+    fn macos_reports_plaintext_storage_and_disables_user_env_sync() {
+        assert_eq!(secret_storage_kind(), "macos_plaintext");
         assert!(custom_global_sync_supported());
         assert!(!custom_global_key_sync_supported());
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_custom_global_sync_uses_keychain_command_auth() {
+    fn macos_plaintext_credentials_round_trip_in_private_json() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir().join(format!("codex-credentials-{}", Uuid::new_v4()));
+        let path = directory.join("credentials.json");
+        let mut credentials = BTreeMap::new();
+        credentials.insert("profile-a".to_string(), "secret-a".to_string());
+        credentials.insert("profile-b".to_string(), "secret-b".to_string());
+
+        save_plaintext_credentials_to(&path, &credentials).expect("save credentials");
+
+        assert_eq!(
+            load_plaintext_credentials_from(&path).expect("load credentials"),
+            credentials
+        );
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("credential metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(&directory)
+                .expect("credential directory metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        let output = std::process::Command::new("/usr/bin/plutil")
+            .args(["-extract", "profile-a", "raw"])
+            .arg(&path)
+            .output()
+            .expect("run plutil");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "secret-a");
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_custom_global_sync_uses_plaintext_file_command_auth() {
         let mut profile = official_profile();
         profile.auth_mode = CodexAuthMode::Custom;
         profile.provider_id = "company_proxy".to_string();
@@ -1708,7 +1794,7 @@ mod tests {
         assert!(provider.get("env_key").is_none());
         assert_eq!(
             provider["auth"]["command"].as_str(),
-            Some("/usr/bin/security")
+            Some("/usr/bin/plutil")
         );
         let arguments = provider["auth"]["args"]
             .as_array()
@@ -1716,17 +1802,8 @@ mod tests {
             .iter()
             .filter_map(TomlValue::as_str)
             .collect::<Vec<_>>();
-        assert_eq!(
-            arguments,
-            vec![
-                "find-generic-password",
-                "-s",
-                crate::macos_keychain::SERVICE,
-                "-a",
-                profile.id.as_str(),
-                "-w",
-            ]
-        );
+        assert_eq!(&arguments[..3], ["-extract", profile.id.as_str(), "raw"]);
+        assert!(arguments[3].ends_with("ClaudeEnvManager/codex/credentials.json"));
         assert!(!rendered.contains("sk-test-secret"));
     }
 

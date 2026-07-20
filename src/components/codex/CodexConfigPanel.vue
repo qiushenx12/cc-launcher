@@ -9,37 +9,48 @@
       <div v-else-if="store.orderedProfiles.length === 0" class="codex-config-panel__empty">
         暂无 CodeX 配置
       </div>
-      <button
-        v-for="item in store.orderedProfiles"
-        v-else
-        :key="item.id"
-        type="button"
-        class="codex-profile-item"
-        :class="{
-          'codex-profile-item--selected': store.selectedProfileId === item.id,
-          'codex-profile-item--applied': store.activeProfileId === item.id,
-        }"
-        @click="store.selectProfile(item.id)"
-      >
-        <span class="codex-profile-item__content">
-          <strong>{{ item.name }}</strong>
-          <small>{{ item.authMode === 'official' ? 'Codex 官方登录' : item.providerId }}</small>
-        </span>
-        <span
-          v-if="profileStateLabel(item.id)"
-          class="codex-profile-item__badge"
+      <div v-else class="codex-profile-list">
+        <button
+          v-for="(item, index) in store.orderedProfiles"
+          :key="item.id"
+          data-drag-item
+          type="button"
+          class="codex-profile-item"
+          :class="{
+            'codex-profile-item--selected': store.selectedProfileId === item.id,
+            'codex-profile-item--applied': store.activeProfileId === item.id,
+            'codex-profile-item--dragging': draggingIndex === index,
+            'codex-profile-item--drag-over': draggingIndex !== null
+              && draggingIndex !== index
+              && overIndex === index,
+          }"
+          @click="onProfileClick(item.id)"
         >
-          {{ profileStateLabel(item.id) }}
-        </span>
-        <span
-          class="codex-profile-item__delete"
-          role="button"
-          tabindex="0"
-          title="删除配置"
-          @click.stop="store.deleteProfile(item.id)"
-          @keydown.enter.stop="store.deleteProfile(item.id)"
-        >×</span>
-      </button>
+          <span
+            class="codex-profile-item__drag-handle"
+            title="拖拽排序"
+            @pointerdown="onPointerDown(index, $event)"
+          />
+          <span class="codex-profile-item__content">
+            <strong>{{ item.name }}</strong>
+            <small>{{ item.authMode === 'official' ? 'Codex 官方登录' : item.providerId }}</small>
+          </span>
+          <span
+            v-if="profileStateLabel(item.id)"
+            class="codex-profile-item__badge"
+          >
+            {{ profileStateLabel(item.id) }}
+          </span>
+          <span
+            class="codex-profile-item__delete"
+            role="button"
+            tabindex="0"
+            title="删除配置"
+            @click.stop="store.deleteProfile(item.id)"
+            @keydown.enter.stop="store.deleteProfile(item.id)"
+          >×</span>
+        </button>
+      </div>
     </aside>
 
     <main class="codex-config-panel__content">
@@ -188,8 +199,8 @@
               : '不勾选时只改变启动器当前方案' }}
           </span>
         </div>
-        <p v-if="profile.authMode === 'custom' && !store.customGlobalSyncSupported" class="scope-warning">
-          macOS 不会把第三方 Key 写入 shell、LaunchAgent 或 Claude 配置。启动器会从 Keychain 读取，并且只注入新启动的 CodeX 子进程；第三方全局同步不可用。
+        <p v-if="profile.authMode === 'custom' && store.secretStorageKind === 'macos_plaintext'" class="scope-warning">
+          macOS 会将第三方 Key 以明文保存到启动器的私有凭据文件，不使用 Keychain；新启动的 CodeX 会按 profile 读取对应 Key。
         </p>
         <p v-if="store.syncToGlobal" class="scope-warning">
           <template v-if="profile.authMode === 'official'">
@@ -199,12 +210,12 @@
             将更新 {{ store.globalConfigPath || '~/.codex/config.toml' }}；并把
             <code>{{ profile.envKey || 'API Key 环境变量' }}</code> 写入 Windows 当前用户环境。该环境变量不是密文存储；外部终端和 CodeX 桌面端需重启后读取新环境。
           </template>
-          <template v-else-if="store.secretStorageKind === 'macos_keychain' && profile.hasStoredApiKey">
-            将把第三方 Provider 和模型同步到 {{ store.globalConfigPath || '~/.codex/config.toml' }}，并配置 Codex 的命令式认证从 Keychain 读取 Key。明文不会写入 TOML 或 shell；外部 Codex 首次读取时 macOS 可能请求 Keychain 授权。
+          <template v-else-if="store.secretStorageKind === 'macos_plaintext' && profile.hasStoredApiKey">
+            将把第三方 Provider 和模型同步到 {{ store.globalConfigPath || '~/.codex/config.toml' }}，并配置 Codex 的命令式认证从启动器凭据文件读取 Key。明文不会写入 TOML 或 shell，不使用 Keychain。
           </template>
           <template v-else>
             将把第三方 Provider、模型和 <code>env_key</code> 同步到
-            {{ store.globalConfigPath || '~/.codex/config.toml' }}。Key 仍只保存在 Keychain，不会写入 TOML 或 shell；启动器内会自动注入，外部 CodeX 需要自行设置
+            {{ store.globalConfigPath || '~/.codex/config.toml' }}。Key 不会写入 TOML 或 shell；启动器内会自动注入，外部 CodeX 需要自行设置
             <code>{{ profile.envKey || 'API Key 环境变量' }}</code>，或配置 Codex 命令式认证。
           </template>
         </p>
@@ -265,17 +276,22 @@ import { useConfigWorkspaceStore } from '@/stores/configWorkspace'
 import ConfigStatusBanner from '@/components/config/ConfigStatusBanner.vue'
 import ModelField from '@/components/config/ModelField.vue'
 import SecretField from '@/components/config/SecretField.vue'
+import { useDragReorder } from '@/composables/useDragReorder'
 import { usePlatform } from '@/composables/usePlatform'
 
 const store = useCodexConfigStore()
 const workspaceStore = useConfigWorkspaceStore()
 const { isMacOS } = usePlatform()
+const { draggingIndex, overIndex, justDragged, onPointerDown } = useDragReorder(
+  () => store.orderedProfiles.map(item => item.id),
+  (newOrder: string[]) => store.reorderProfiles(newOrder),
+)
 const profile = computed(() => store.editingProfile)
 const defaultProfilesPath = computed(() => isMacOS.value
   ? '~/Library/Application Support/ClaudeEnvManager/codex/profiles.json'
   : '%APPDATA%\\ClaudeEnvManager\\codex\\profiles.json')
-const secretStorageDescription = computed(() => store.secretStorageKind === 'macos_keychain'
-  ? 'Key 使用 macOS Keychain 按 profile 隔离保存；Codex 通过命令式认证按需读取，明文不会写入配置文件。'
+const secretStorageDescription = computed(() => store.secretStorageKind === 'macos_plaintext'
+  ? 'Key 以明文保存在启动器私有 credentials.json 中；Codex 通过命令式认证按 profile 读取，不使用 Keychain。'
   : 'Key 使用 Windows DPAPI 加密保存，并且只注入启动器创建的 CodeX 子进程。')
 watch(
   () => [profile.value.authMode, store.customGlobalSyncSupported] as const,
@@ -328,6 +344,11 @@ function profileStateLabel(profileId: string) {
   return ''
 }
 
+function onProfileClick(profileId: string) {
+  if (justDragged.value) return
+  store.selectProfile(profileId)
+}
+
 function onEffortSelect(event: Event) {
   const value = (event.target as HTMLSelectElement).value
   if (value) profile.value.reasoningEffort = value
@@ -368,9 +389,14 @@ onMounted(() => {
   font-size: var(--font-size-small);
 }
 
+.codex-profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .codex-profile-item {
   width: 100%;
-  margin-bottom: 3px;
   padding: 8px 10px;
   display: flex;
   align-items: center;
@@ -381,12 +407,55 @@ onMounted(() => {
   background: transparent;
   cursor: pointer;
   text-align: left;
+  transition: background-color 0.12s ease, transform 0.18s ease;
+  user-select: none;
+  position: relative;
+  will-change: transform;
 }
 
 .codex-profile-item:hover { background: var(--tab-bg); }
 .codex-profile-item--selected { color: #fff; background: var(--primary); }
 .codex-profile-item--selected:hover { background: var(--primary-hover); }
 .codex-profile-item--applied { box-shadow: inset 3px 0 var(--success, #22c55e); }
+
+.codex-profile-item--dragging {
+  opacity: 0.3;
+  background: var(--tab-bg);
+}
+
+.codex-profile-item__drag-handle {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  position: relative;
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  touch-action: none;
+}
+
+.codex-profile-item__drag-handle::before,
+.codex-profile-item__drag-handle::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  width: 2.5px;
+  height: 2.5px;
+  border-radius: 50%;
+  background-color: var(--text-secondary);
+  box-shadow: 5px 0 0 var(--text-secondary), 10px 0 0 var(--text-secondary);
+}
+
+.codex-profile-item__drag-handle::before { top: 1.5px; }
+.codex-profile-item__drag-handle::after { bottom: 1.5px; }
+.codex-profile-item__drag-handle:active { cursor: grabbing; }
+.codex-profile-item:hover .codex-profile-item__drag-handle { opacity: 1; }
+
+.codex-profile-item--selected .codex-profile-item__drag-handle::before,
+.codex-profile-item--selected .codex-profile-item__drag-handle::after {
+  background-color: rgba(255, 255, 255, 0.72);
+  box-shadow: 5px 0 0 rgba(255, 255, 255, 0.72), 10px 0 0 rgba(255, 255, 255, 0.72);
+}
 
 .codex-profile-item__content {
   min-width: 0;

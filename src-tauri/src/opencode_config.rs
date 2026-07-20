@@ -271,6 +271,30 @@ pub struct SaveOpencodeGlobalConfigRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WriteOpencodeGlobalProviderRequest {
+    pub provider: OpencodeGlobalProvider,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteOpencodeGlobalProviderRequest {
+    pub provider_id: String,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveOpencodeGlobalOptionsRequest {
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub small_model: String,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FetchOpencodeGlobalModelsRequest {
     pub provider: OpencodeGlobalProvider,
 }
@@ -1185,56 +1209,67 @@ fn normalize_global_config(
     config.small_model = config.small_model.trim().to_string();
     let mut provider_ids = HashSet::new();
     for provider in &mut config.providers {
-        provider.original_id = provider.original_id.trim().to_string();
-        provider.id = provider.id.trim().to_string();
-        provider.name = provider.name.trim().to_string();
-        provider.base_url = provider.base_url.trim().to_string();
-        provider.api_key = provider.api_key.trim().to_string();
-        if !valid_stable_id(&provider.id) {
-            return Err("Provider ID 只能包含字母、数字、短横线和下划线".to_string());
-        }
+        *provider = normalize_global_provider(provider.clone())?;
         if !provider_ids.insert(provider.id.clone()) {
             return Err(format!("Provider ID '{}' 重复", provider.id));
         }
-        if provider.name.is_empty() {
-            provider.name = provider.id.clone();
-        }
-        if provider.npm.trim().is_empty() {
-            provider.npm = "@ai-sdk/openai-compatible".to_string();
-        }
-        if provider.base_url.is_empty() {
-            return Err(format!("Provider '{}' 需要 API 地址", provider.id));
-        }
-        validate_url(&provider.base_url)?;
-        let mut model_ids = HashSet::new();
-        for model in &mut provider.models {
-            model.original_id = model.original_id.trim().to_string();
-            model.id = model.id.trim().to_string();
-            model.name = model.name.trim().to_string();
-            if model.id.is_empty() {
-                return Err(format!("Provider '{}' 存在空模型 ID", provider.id));
-            }
-            if !model_ids.insert(model.id.clone()) {
-                return Err(format!("模型 ID '{}' 重复", model.id));
-            }
-            if model.name.is_empty() {
-                model.name = model.id.clone();
-            }
-            if !model.input_text && !model.input_image {
-                return Err(format!(
-                    "模型 '{}' 至少选择 Text 或 Image 一种输入能力",
-                    model.id
-                ));
-            }
-            if model.context_limit.is_some() != model.output_limit.is_some() {
-                return Err(format!(
-                    "模型 '{}' 必须同时填写上下文长度与输出上限",
-                    model.id
-                ));
-            }
-        }
     }
     Ok(config)
+}
+
+fn normalize_global_provider(
+    mut provider: OpencodeGlobalProvider,
+) -> Result<OpencodeGlobalProvider, String> {
+    provider.original_id = provider.original_id.trim().to_string();
+    provider.id = provider.id.trim().to_string();
+    provider.name = provider.name.trim().to_string();
+    provider.npm = provider.npm.trim().to_string();
+    provider.base_url = provider.base_url.trim().to_string();
+    provider.api_key = provider.api_key.trim().to_string();
+    if !valid_stable_id(&provider.id) {
+        return Err("Provider ID 只能包含字母、数字、短横线和下划线".to_string());
+    }
+    if !provider.original_id.is_empty() && !valid_stable_id(&provider.original_id) {
+        return Err("原 Provider ID 含有不支持的字符".to_string());
+    }
+    if provider.name.is_empty() {
+        provider.name = provider.id.clone();
+    }
+    if provider.npm.is_empty() {
+        provider.npm = "@ai-sdk/openai-compatible".to_string();
+    }
+    if provider.base_url.is_empty() {
+        return Err(format!("Provider '{}' 需要 API 地址", provider.id));
+    }
+    validate_url(&provider.base_url)?;
+    let mut model_ids = HashSet::new();
+    for model in &mut provider.models {
+        model.original_id = model.original_id.trim().to_string();
+        model.id = model.id.trim().to_string();
+        model.name = model.name.trim().to_string();
+        if model.id.is_empty() {
+            return Err(format!("Provider '{}' 存在空模型 ID", provider.id));
+        }
+        if !model_ids.insert(model.id.clone()) {
+            return Err(format!("模型 ID '{}' 重复", model.id));
+        }
+        if model.name.is_empty() {
+            model.name = model.id.clone();
+        }
+        if !model.input_text && !model.input_image {
+            return Err(format!(
+                "模型 '{}' 至少选择 Text 或 Image 一种输入能力",
+                model.id
+            ));
+        }
+        if model.context_limit.is_some() != model.output_limit.is_some() {
+            return Err(format!(
+                "模型 '{}' 必须同时填写上下文长度与输出上限",
+                model.id
+            ));
+        }
+    }
+    Ok(provider)
 }
 
 fn apply_global_model(model: &OpencodeGlobalModel, value: &mut Value) {
@@ -1370,10 +1405,131 @@ fn build_global_config(
     if provider_map.is_empty() {
         root_object.remove("provider");
     }
+    render_global_config(&root)
+}
+
+fn render_global_config(root: &Value) -> Result<String, String> {
     let rendered = serde_json::to_string_pretty(&root)
         .map_err(|error| format!("无法生成 OpenCode 全局配置：{error}"))?;
     validate_managed_config(&rendered)?;
     Ok(format!("{rendered}\n"))
+}
+
+fn build_global_provider_update(
+    mut root: Value,
+    provider: &OpencodeGlobalProvider,
+) -> Result<String, String> {
+    let root_object = object_mut(&mut root);
+    root_object
+        .entry("$schema".to_string())
+        .or_insert_with(|| Value::String(SCHEMA_URL.to_string()));
+    let providers = root_object
+        .entry("provider".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let provider_map = object_mut(providers);
+
+    if provider.original_id.is_empty() {
+        if provider_map.contains_key(&provider.id) {
+            return Err(format!(
+                "Provider ID '{}' 已被现有配置使用，无法写入",
+                provider.id
+            ));
+        }
+    } else {
+        let existing = provider_map.get(&provider.original_id).ok_or_else(|| {
+            format!(
+                "Provider '{}' 已不在目标 JSON 中，请重新读取",
+                provider.original_id
+            )
+        })?;
+        if !is_custom_provider(existing) {
+            return Err(format!(
+                "Provider '{}' 不是启动器可管理的自定义供应商",
+                provider.original_id
+            ));
+        }
+        if provider.id != provider.original_id && provider_map.contains_key(&provider.id) {
+            return Err(format!(
+                "Provider ID '{}' 已被现有配置使用，无法重命名",
+                provider.id
+            ));
+        }
+    }
+
+    let mut provider_value = if provider.original_id.is_empty() {
+        Value::Object(Map::new())
+    } else {
+        provider_map
+            .remove(&provider.original_id)
+            .unwrap_or_else(|| Value::Object(Map::new()))
+    };
+    apply_global_provider(provider, &mut provider_value)?;
+    provider_map.insert(provider.id.clone(), provider_value);
+
+    if !provider.original_id.is_empty() && provider.original_id != provider.id {
+        if let Some(disabled) = root_object
+            .get_mut("disabled_providers")
+            .and_then(Value::as_array_mut)
+        {
+            for item in disabled {
+                if item.as_str() == Some(provider.original_id.as_str()) {
+                    *item = Value::String(provider.id.clone());
+                }
+            }
+        }
+    }
+    render_global_config(&root)
+}
+
+fn build_global_provider_delete(mut root: Value, provider_id: &str) -> Result<String, String> {
+    let root_object = object_mut(&mut root);
+    let remove_provider_map = {
+        let provider_map = root_object
+            .get_mut("provider")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| format!("Provider '{provider_id}' 不存在于目标 JSON"))?;
+        let existing = provider_map
+            .get(provider_id)
+            .ok_or_else(|| format!("Provider '{provider_id}' 不存在于目标 JSON"))?;
+        if !is_custom_provider(existing) {
+            return Err(format!(
+                "Provider '{provider_id}' 不是启动器可管理的自定义供应商"
+            ));
+        }
+        provider_map.remove(provider_id);
+        provider_map.is_empty()
+    };
+    if remove_provider_map {
+        root_object.remove("provider");
+    }
+
+    let remove_disabled_list = if let Some(disabled) = root_object
+        .get_mut("disabled_providers")
+        .and_then(Value::as_array_mut)
+    {
+        disabled.retain(|item| item.as_str() != Some(provider_id));
+        disabled.is_empty()
+    } else {
+        false
+    };
+    if remove_disabled_list {
+        root_object.remove("disabled_providers");
+    }
+    render_global_config(&root)
+}
+
+fn build_global_options_update(
+    mut root: Value,
+    model: &str,
+    small_model: &str,
+) -> Result<String, String> {
+    let root_object = object_mut(&mut root);
+    root_object
+        .entry("$schema".to_string())
+        .or_insert_with(|| Value::String(SCHEMA_URL.to_string()));
+    set_optional_string(root_object, "model", model.trim());
+    set_optional_string(root_object, "small_model", small_model.trim());
+    render_global_config(&root)
 }
 
 fn has_plaintext_api_key(value: &Value) -> bool {
@@ -1429,6 +1585,50 @@ pub fn save_opencode_global_config(
         return Err("opencode.jsonc 已被其它程序修改，请先刷新后再保存".to_string());
     }
     let rendered = build_global_config(value, &config)?;
+    write_global_config_atomic(&path, rendered.as_bytes())?;
+    load_opencode_global_config()
+}
+
+#[tauri::command]
+pub fn write_opencode_global_provider(
+    request: WriteOpencodeGlobalProviderRequest,
+) -> Result<OpencodeGlobalConfigPayload, String> {
+    let provider = normalize_global_provider(request.provider)?;
+    let (path, raw, value) = read_global_config_document()?;
+    if document_revision(&raw) != request.revision {
+        return Err("opencode.jsonc 已被其它程序修改，请先刷新后再写入".to_string());
+    }
+    let rendered = build_global_provider_update(value, &provider)?;
+    write_global_config_atomic(&path, rendered.as_bytes())?;
+    load_opencode_global_config()
+}
+
+#[tauri::command]
+pub fn delete_opencode_global_provider(
+    request: DeleteOpencodeGlobalProviderRequest,
+) -> Result<OpencodeGlobalConfigPayload, String> {
+    let provider_id = request.provider_id.trim();
+    if !valid_stable_id(provider_id) {
+        return Err("Provider ID 无效，无法从目标 JSON 删除".to_string());
+    }
+    let (path, raw, value) = read_global_config_document()?;
+    if document_revision(&raw) != request.revision {
+        return Err("opencode.jsonc 已被其它程序修改，请先刷新后再删除".to_string());
+    }
+    let rendered = build_global_provider_delete(value, provider_id)?;
+    write_global_config_atomic(&path, rendered.as_bytes())?;
+    load_opencode_global_config()
+}
+
+#[tauri::command]
+pub fn save_opencode_global_options(
+    request: SaveOpencodeGlobalOptionsRequest,
+) -> Result<OpencodeGlobalConfigPayload, String> {
+    let (path, raw, value) = read_global_config_document()?;
+    if document_revision(&raw) != request.revision {
+        return Err("opencode.jsonc 已被其它程序修改，请先刷新后再保存".to_string());
+    }
+    let rendered = build_global_options_update(value, &request.model, &request.small_model)?;
     write_global_config_atomic(&path, rendered.as_bytes())?;
     load_opencode_global_config()
 }
@@ -2827,6 +3027,101 @@ mod tests {
             value["provider"]["custom"]["models"]["vision"]["modalities"]["output"],
             json!(["text"])
         );
+    }
+
+    #[test]
+    fn writing_one_global_provider_preserves_other_providers() {
+        let existing = json!({
+            "$schema": SCHEMA_URL,
+            "shell": "powershell",
+            "provider": {
+                "first": {
+                    "name": "First",
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": { "baseURL": "https://first.example/v1" }
+                },
+                "native": {
+                    "name": "Built in override",
+                    "options": { "timeout": 1234 }
+                }
+            }
+        });
+        let provider = OpencodeGlobalProvider {
+            original_id: String::new(),
+            id: "second".to_string(),
+            name: "Second".to_string(),
+            npm: "@ai-sdk/openai-compatible".to_string(),
+            base_url: "https://second.example/v1".to_string(),
+            api_key: String::new(),
+            models: Vec::new(),
+        };
+
+        let rendered = build_global_provider_update(existing, &provider).expect("write provider");
+        let value: Value = serde_json::from_str(&rendered).expect("strict JSON output");
+
+        assert_eq!(
+            value["provider"]["first"]["options"]["baseURL"],
+            "https://first.example/v1"
+        );
+        assert_eq!(
+            value["provider"]["second"]["options"]["baseURL"],
+            "https://second.example/v1"
+        );
+        assert_eq!(value["provider"]["native"]["options"]["timeout"], 1234);
+        assert_eq!(value["shell"], "powershell");
+    }
+
+    #[test]
+    fn deleting_one_global_provider_preserves_the_others() {
+        let existing = json!({
+            "$schema": SCHEMA_URL,
+            "disabled_providers": ["first", "second"],
+            "provider": {
+                "first": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": { "baseURL": "https://first.example/v1" }
+                },
+                "second": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": { "baseURL": "https://second.example/v1" }
+                }
+            }
+        });
+
+        let rendered = build_global_provider_delete(existing, "first").expect("delete provider");
+        let value: Value = serde_json::from_str(&rendered).expect("strict JSON output");
+
+        assert!(value["provider"].get("first").is_none());
+        assert_eq!(
+            value["provider"]["second"]["options"]["baseURL"],
+            "https://second.example/v1"
+        );
+        assert_eq!(value["disabled_providers"], json!(["second"]));
+    }
+
+    #[test]
+    fn saving_global_options_does_not_rewrite_providers() {
+        let existing = json!({
+            "$schema": SCHEMA_URL,
+            "model": "first/old-model",
+            "provider": {
+                "first": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": {
+                        "baseURL": "https://first.example/v1",
+                        "timeout": 9000
+                    }
+                }
+            }
+        });
+
+        let rendered = build_global_options_update(existing, "first/new-model", "")
+            .expect("save global options");
+        let value: Value = serde_json::from_str(&rendered).expect("strict JSON output");
+
+        assert_eq!(value["model"], "first/new-model");
+        assert!(value.get("small_model").is_none());
+        assert_eq!(value["provider"]["first"]["options"]["timeout"], 9000);
     }
 
     #[test]

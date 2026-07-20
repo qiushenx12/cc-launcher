@@ -29,8 +29,19 @@ function cloneConfig(config: OpencodeGlobalConfigPayload): OpencodeGlobalConfigP
   return JSON.parse(JSON.stringify(config)) as OpencodeGlobalConfigPayload
 }
 
+function cloneProvider(provider: OpencodeGlobalProvider): OpencodeGlobalProvider {
+  return JSON.parse(JSON.stringify(provider)) as OpencodeGlobalProvider
+}
+
+const providerClientKeys = new WeakMap<OpencodeGlobalProvider, string>()
+
 function providerKey(provider: OpencodeGlobalProvider) {
-  return provider.originalId || provider.id
+  if (provider.originalId) return provider.originalId
+  const existing = providerClientKeys.get(provider)
+  if (existing) return existing
+  const created = `draft-${crypto.randomUUID()}`
+  providerClientKeys.set(provider, created)
+  return created
 }
 
 function editableSnapshot(config: OpencodeGlobalConfigPayload) {
@@ -39,6 +50,16 @@ function editableSnapshot(config: OpencodeGlobalConfigPayload) {
     smallModel: config.smallModel,
     providers: config.providers,
   })
+}
+
+function globalOptionsSnapshot(
+  config: Pick<OpencodeGlobalConfigPayload, 'model' | 'smallModel'>,
+) {
+  return JSON.stringify({ model: config.model, smallModel: config.smallModel })
+}
+
+function providerSnapshot(provider: OpencodeGlobalProvider) {
+  return JSON.stringify(provider)
 }
 
 function emptyPermissionStatus(): OpencodePermissionStatus {
@@ -68,12 +89,70 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
   const permissionChecking = ref(false)
   const permissionRepairing = ref(false)
   const permissionError = ref('')
+  const selectedProviderIndex = ref(-1)
+  const providerOrder = ref<string[]>([])
 
   const isDirty = computed(() => editableSnapshot(editingConfig.value) !== baseline.value)
+  const selectedProvider = computed(() =>
+    editingConfig.value.providers[selectedProviderIndex.value] ?? null,
+  )
+  const orderedProviders = computed(() => {
+    const providersByKey = new Map(
+      editingConfig.value.providers.map(provider => [providerKey(provider), provider]),
+    )
+    const ordered = providerOrder.value
+      .map(key => providersByKey.get(key))
+      .filter(Boolean) as OpencodeGlobalProvider[]
+    const included = new Set(ordered)
+    return [...ordered, ...editingConfig.value.providers.filter(provider => !included.has(provider))]
+  })
+  const isGlobalOptionsDirty = computed(() => {
+    const snapshot = JSON.parse(baseline.value) as Pick<
+      OpencodeGlobalConfigPayload,
+      'model' | 'smallModel'
+    >
+    return globalOptionsSnapshot(editingConfig.value) !== globalOptionsSnapshot(snapshot)
+  })
+  const isSelectedProviderDirty = computed(() => {
+    const provider = selectedProvider.value
+    if (!provider) return false
+    if (!provider.originalId) return true
+    const snapshot = JSON.parse(baseline.value) as Pick<OpencodeGlobalConfigPayload, 'providers'>
+    const stored = snapshot.providers.find(item => item.id === provider.originalId)
+    return !stored || providerSnapshot(provider) !== providerSnapshot(stored)
+  })
   const configuredModelIds = computed(() => editingConfig.value.providers.flatMap(provider =>
     provider.models.map(model => `${provider.id}/${model.id}`),
   ))
   const globalConfigPath = computed(() => editingConfig.value.configPath)
+
+  function reconcileProviderOrder(requestedOrder = providerOrder.value) {
+    const validKeys = editingConfig.value.providers.map(provider => providerKey(provider))
+    const validKeySet = new Set(validKeys)
+    const seen = new Set<string>()
+    const retainedOrder = requestedOrder.filter((key) => {
+      if (!validKeySet.has(key) || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    const appendedKeys = validKeys.filter((key) => {
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    return [
+      ...retainedOrder,
+      ...appendedKeys,
+    ]
+  }
+
+  async function persistProviderOrder(nextOrder: string[]) {
+    await invoke('save_config_order', { key: 'opencode', order: nextOrder })
+    const persistedOrder = await invoke<string[]>('load_config_order', { key: 'opencode' })
+    if (JSON.stringify(persistedOrder) !== JSON.stringify(nextOrder)) {
+      throw new Error('排序写入后回读不一致')
+    }
+  }
 
   async function checkPermissions() {
     if (permissionChecking.value) return permissionStatus.value
@@ -98,7 +177,7 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
       permissionError.value = ''
       if (!preserveDraft) await loadConfig(true)
       statusMessage.value = preserveDraft
-        ? 'OpenCode 目录权限已修复，界面修改保持不变；请重新点击保存'
+        ? 'OpenCode 目录权限已修复，界面修改保持不变；请重新执行写入或保存'
         : 'OpenCode 目录权限已修复，配置已重新读取'
       return true
     } catch (error) {
@@ -121,11 +200,20 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
     return detail
   }
 
-  function applyPayload(payload: OpencodeGlobalConfigPayload) {
+  function applyPayload(payload: OpencodeGlobalConfigPayload, preferredProviderId?: string | null) {
     editingConfig.value = cloneConfig(payload)
     baseline.value = editableSnapshot(editingConfig.value)
     availableModels.value = {}
     connectionKeyInputs.value = { ...payload.connectionKeys }
+    providerOrder.value = reconcileProviderOrder()
+    const preferredIndex = preferredProviderId
+      ? editingConfig.value.providers.findIndex(provider =>
+        provider.originalId === preferredProviderId || provider.id === preferredProviderId,
+      )
+      : -1
+    selectedProviderIndex.value = preferredIndex >= 0
+      ? preferredIndex
+      : editingConfig.value.providers.length > 0 ? 0 : -1
     loaded.value = true
     loadError.value = ''
   }
@@ -134,8 +222,13 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
     if (loading.value || (loaded.value && !force)) return
     loading.value = true
     try {
-      const payload = await invoke<OpencodeGlobalConfigPayload>('load_opencode_global_config')
-      applyPayload(payload)
+      const [payload, savedOrder] = await Promise.all([
+        invoke<OpencodeGlobalConfigPayload>('load_opencode_global_config'),
+        invoke<string[]>('load_config_order', { key: 'opencode' }).catch(() => []),
+      ])
+      providerOrder.value = savedOrder
+      const preferredProviderId = selectedProvider.value?.originalId || selectedProvider.value?.id
+      applyPayload(payload, preferredProviderId)
       statusMessage.value = `已从 ${payload.configPath} 读取 ${payload.providers.length} 个自定义 Provider`
     } catch (error) {
       loaded.value = false
@@ -152,6 +245,7 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
   }
 
   function discardChanges() {
+    const preferredProviderId = selectedProvider.value?.originalId || selectedProvider.value?.id
     const snapshot = JSON.parse(baseline.value) as Pick<
       OpencodeGlobalConfigPayload,
       'model' | 'smallModel' | 'providers'
@@ -160,6 +254,41 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
     editingConfig.value.smallModel = snapshot.smallModel
     editingConfig.value.providers = snapshot.providers
     availableModels.value = {}
+    providerOrder.value = reconcileProviderOrder()
+    const preferredIndex = preferredProviderId
+      ? editingConfig.value.providers.findIndex(provider => provider.id === preferredProviderId)
+      : -1
+    selectedProviderIndex.value = preferredIndex >= 0
+      ? preferredIndex
+      : editingConfig.value.providers.length > 0 ? 0 : -1
+  }
+
+  function discardSelectedProviderChanges() {
+    const provider = selectedProvider.value
+    if (!provider || !isSelectedProviderDirty.value) return
+    if (!provider.originalId) {
+      const removedKey = providerKey(provider)
+      editingConfig.value.providers.splice(selectedProviderIndex.value, 1)
+      providerOrder.value = providerOrder.value.filter(key => key !== removedKey)
+      selectedProviderIndex.value = editingConfig.value.providers.length > 0
+        ? Math.min(selectedProviderIndex.value, editingConfig.value.providers.length - 1)
+        : -1
+      return
+    }
+    const snapshot = JSON.parse(baseline.value) as Pick<OpencodeGlobalConfigPayload, 'providers'>
+    const stored = snapshot.providers.find(item => item.id === provider.originalId)
+    if (stored) editingConfig.value.providers[selectedProviderIndex.value] = cloneProvider(stored)
+  }
+
+  async function confirmDiscardSelectedProviderChanges(action: string) {
+    if (!isSelectedProviderDirty.value) return true
+    const provider = selectedProvider.value
+    const accepted = await confirm(
+      `供应商“${provider?.name || provider?.id || '未命名'}”有未写入的修改。${action}将放弃这些修改，是否继续？`,
+      { title: '未写入的 OpenCode 供应商', kind: 'warning' },
+    )
+    if (accepted) discardSelectedProviderChanges()
+    return accepted
   }
 
   async function confirmDiscardChanges(action: string) {
@@ -178,9 +307,22 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
     return loaded.value
   }
 
-  function addProvider() {
-    const index = editingConfig.value.providers.length + 1
-    editingConfig.value.providers.push({
+  async function selectProvider(target: OpencodeGlobalProvider) {
+    if (target === selectedProvider.value) return true
+    if (!editingConfig.value.providers.includes(target)) return false
+    if (!(await confirmDiscardSelectedProviderChanges('切换供应商'))) return false
+    const targetIndex = editingConfig.value.providers.indexOf(target)
+    if (targetIndex < 0) return false
+    selectedProviderIndex.value = targetIndex
+    return true
+  }
+
+  async function addProvider() {
+    if (!(await confirmDiscardSelectedProviderChanges('新建供应商'))) return false
+    let index = editingConfig.value.providers.length + 1
+    const existingIds = new Set(editingConfig.value.providers.map(provider => provider.id))
+    while (existingIds.has(`provider-${index}`)) index += 1
+    const provider: OpencodeGlobalProvider = {
       originalId: '',
       id: `provider-${index}`,
       name: '',
@@ -188,17 +330,31 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
       baseUrl: '',
       apiKey: '',
       models: [],
-    })
+    }
+    editingConfig.value.providers.push(provider)
+    selectedProviderIndex.value = editingConfig.value.providers.length - 1
+    const addedProvider = selectedProvider.value
+    if (addedProvider) providerOrder.value.push(providerKey(addedProvider))
+    return true
   }
 
-  async function removeProvider(provider: OpencodeGlobalProvider) {
-    const accepted = await confirm(
-      `确定从 opencode.jsonc 删除自定义 Provider“${provider.name || provider.id}”吗？`,
-      { title: '删除 OpenCode Provider', kind: 'warning' },
-    )
-    if (!accepted) return false
-    editingConfig.value.providers = editingConfig.value.providers.filter(item => item !== provider)
-    return true
+  async function reorderProviders(newOrder: string[]) {
+    const previousOrder = [...providerOrder.value]
+    if (JSON.stringify(newOrder) === JSON.stringify(previousOrder)) return true
+    providerOrder.value = [...newOrder]
+    try {
+      await persistProviderOrder(newOrder)
+      return true
+    } catch (error) {
+      providerOrder.value = previousOrder
+      try {
+        await persistProviderOrder(previousOrder)
+        statusMessage.value = `保存 OpenCode 供应商排序失败，旧排序已恢复：${error}`
+      } catch (rollbackError) {
+        statusMessage.value = `保存 OpenCode 供应商排序失败且旧排序恢复未通过校验：${rollbackError}；原始错误：${error}`
+      }
+      return false
+    }
   }
 
   function addModel(provider: OpencodeGlobalProvider, modelId: string) {
@@ -344,18 +500,178 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
     }
   }
 
-  async function saveConfig() {
-    if (saving.value || !isDirty.value) return false
+  async function writeSelectedProvider() {
+    const provider = selectedProvider.value
+    if (saving.value || !provider) return false
+    const providerId = provider.id
+    const providerName = provider.name || provider.id
+    const currentProviderKey = providerKey(provider)
+    const pendingKey = connectionKeyInputs.value[currentProviderKey] || ''
+    const preserveGlobalOptions = isGlobalOptionsDirty.value
+    const globalDraft = {
+      model: editingConfig.value.model,
+      smallModel: editingConfig.value.smallModel,
+    }
     saving.value = true
     try {
-      const payload = await invoke<OpencodeGlobalConfigPayload>('save_opencode_global_config', {
-        request: { config: cloneConfig(editingConfig.value) },
+      const payload = await invoke<OpencodeGlobalConfigPayload>('write_opencode_global_provider', {
+        request: {
+          provider: cloneProvider(provider),
+          revision: editingConfig.value.revision,
+        },
       })
-      applyPayload(payload)
-      statusMessage.value = `已保存并重新读取 ${payload.configPath}`
+      providerOrder.value = providerOrder.value.map(key =>
+        key === currentProviderKey ? providerId : key,
+      )
+      applyPayload(payload, providerId)
+      let orderWarning = ''
+      if (currentProviderKey !== providerId) {
+        try {
+          await persistProviderOrder(providerOrder.value)
+        } catch (error) {
+          orderWarning = `；但供应商排序保存失败：${error}`
+        }
+      }
+      if (preserveGlobalOptions) {
+        editingConfig.value.model = globalDraft.model
+        editingConfig.value.smallModel = globalDraft.smallModel
+      }
+      if (pendingKey && selectedProvider.value) {
+        connectionKeyInputs.value[providerKey(selectedProvider.value)] = pendingKey
+      }
+      statusMessage.value = `供应商 '${providerName}' 已写入 ${payload.configPath}；其它供应商保持不变${orderWarning}`
       return true
     } catch (error) {
-      statusMessage.value = `保存 opencode.jsonc 失败，界面内容已保留：${await permissionAwareError(error)}`
+      statusMessage.value = `写入供应商 '${providerName}' 失败，界面内容已保留：${await permissionAwareError(error)}`
+      return false
+    } finally {
+      saving.value = false
+    }
+  }
+
+  async function deleteSelectedProvider() {
+    const provider = selectedProvider.value
+    if (saving.value || !provider) return false
+    const providerName = provider.name || provider.id
+    const accepted = await confirm(
+      provider.originalId
+        ? `确定从 opencode.jsonc 删除供应商“${providerName}”吗？其它供应商及 auth.json 中的 Key 均会保留。`
+        : `供应商“${providerName}”尚未写入 opencode.jsonc，确定放弃这个草稿吗？`,
+      { title: '删除 OpenCode 供应商', kind: 'warning' },
+    )
+    if (!accepted) return false
+
+    if (!provider.originalId) {
+      const removedKey = providerKey(provider)
+      editingConfig.value.providers.splice(selectedProviderIndex.value, 1)
+      providerOrder.value = providerOrder.value.filter(key => key !== removedKey)
+      selectedProviderIndex.value = editingConfig.value.providers.length > 0
+        ? Math.min(selectedProviderIndex.value, editingConfig.value.providers.length - 1)
+        : -1
+      try {
+        await persistProviderOrder(providerOrder.value)
+        statusMessage.value = `未写入的供应商 '${providerName}' 已移除`
+      } catch (error) {
+        statusMessage.value = `未写入的供应商 '${providerName}' 已移除，但排序状态清理失败：${error}`
+      }
+      return true
+    }
+
+    const deletedIndex = selectedProviderIndex.value
+    const preserveGlobalOptions = isGlobalOptionsDirty.value
+    const globalDraft = {
+      model: editingConfig.value.model,
+      smallModel: editingConfig.value.smallModel,
+    }
+    const remainingProviders = editingConfig.value.providers.filter(item => item !== provider)
+    const nextProvider = remainingProviders.length > 0
+      ? remainingProviders[Math.min(deletedIndex, remainingProviders.length - 1)]
+      : null
+    const nextProviderId = nextProvider?.originalId || nextProvider?.id || null
+    saving.value = true
+    try {
+      const payload = await invoke<OpencodeGlobalConfigPayload>('delete_opencode_global_provider', {
+        request: {
+          providerId: provider.originalId,
+          revision: editingConfig.value.revision,
+        },
+      })
+      applyPayload(payload, nextProviderId)
+      let orderWarning = ''
+      try {
+        await persistProviderOrder(providerOrder.value)
+      } catch (error) {
+        orderWarning = `；但供应商排序清理失败：${error}`
+      }
+      if (preserveGlobalOptions) {
+        editingConfig.value.model = globalDraft.model
+        editingConfig.value.smallModel = globalDraft.smallModel
+      }
+      statusMessage.value = `供应商 '${providerName}' 已从 ${payload.configPath} 删除；其它供应商和 Key 保持不变${orderWarning}`
+      return true
+    } catch (error) {
+      statusMessage.value = `删除供应商 '${providerName}' 失败：${await permissionAwareError(error)}`
+      return false
+    } finally {
+      saving.value = false
+    }
+  }
+
+  async function saveGlobalOptions() {
+    if (saving.value || !isGlobalOptionsDirty.value) return false
+    const providerDraft = selectedProvider.value && isSelectedProviderDirty.value
+      ? cloneProvider(selectedProvider.value)
+      : null
+    const selectedId = selectedProvider.value?.originalId || selectedProvider.value?.id || null
+    const providerDraftKey = selectedProvider.value && providerDraft
+      ? providerKey(selectedProvider.value)
+      : null
+    const providerDraftOrderIndex = providerDraftKey
+      ? providerOrder.value.indexOf(providerDraftKey)
+      : -1
+    const pendingKey = selectedProvider.value
+      ? connectionKeyInputs.value[providerKey(selectedProvider.value)] || ''
+      : ''
+    saving.value = true
+    try {
+      const payload = await invoke<OpencodeGlobalConfigPayload>('save_opencode_global_options', {
+        request: {
+          model: editingConfig.value.model,
+          smallModel: editingConfig.value.smallModel,
+          revision: editingConfig.value.revision,
+        },
+      })
+      applyPayload(payload, selectedId)
+      if (providerDraft) {
+        const storedIndex = providerDraft.originalId
+          ? editingConfig.value.providers.findIndex(item => item.id === providerDraft.originalId)
+          : -1
+        if (storedIndex >= 0) {
+          editingConfig.value.providers[storedIndex] = providerDraft
+          selectedProviderIndex.value = storedIndex
+        } else {
+          editingConfig.value.providers.push(providerDraft)
+          selectedProviderIndex.value = editingConfig.value.providers.length - 1
+        }
+        const restoredProvider = selectedProvider.value
+        if (restoredProvider) {
+          if (!restoredProvider.originalId && providerDraftKey) {
+            providerClientKeys.set(restoredProvider, providerDraftKey)
+          }
+          const restoredKey = providerKey(restoredProvider)
+          if (!providerOrder.value.includes(restoredKey)) {
+            const insertAt = providerDraftOrderIndex >= 0
+              ? Math.min(providerDraftOrderIndex, providerOrder.value.length)
+              : providerOrder.value.length
+            providerOrder.value.splice(insertAt, 0, restoredKey)
+          }
+          if (pendingKey) connectionKeyInputs.value[restoredKey] = pendingKey
+        }
+      }
+      statusMessage.value = `OpenCode 默认模型选项已保存到 ${payload.configPath}`
+      return true
+    } catch (error) {
+      statusMessage.value = `保存 OpenCode 全局选项失败：${await permissionAwareError(error)}`
       return false
     } finally {
       saving.value = false
@@ -402,7 +718,13 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
     permissionChecking,
     permissionRepairing,
     permissionError,
+    selectedProviderIndex,
+    selectedProvider,
+    providerOrder,
+    orderedProviders,
     isDirty,
+    isGlobalOptionsDirty,
+    isSelectedProviderDirty,
     configuredModelIds,
     globalConfigPath,
     checkPermissions,
@@ -410,11 +732,16 @@ export const useOpencodeConfigStore = defineStore('opencodeConfig', () => {
     loadConfig,
     ensureLoaded,
     refreshConfig,
-    saveConfig,
+    writeSelectedProvider,
+    deleteSelectedProvider,
+    saveGlobalOptions,
     discardChanges,
+    discardSelectedProviderChanges,
     confirmDiscardChanges,
+    confirmDiscardSelectedProviderChanges,
+    selectProvider,
     addProvider,
-    removeProvider,
+    reorderProviders,
     addModel,
     removeModel,
     fetchModels,

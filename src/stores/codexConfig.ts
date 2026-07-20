@@ -280,6 +280,33 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
     }
   }
 
+  async function reorderProfiles(newOrder: string[]): Promise<boolean> {
+    const previousOrder = [...order.value]
+    if (JSON.stringify(newOrder) === JSON.stringify(previousOrder)) return true
+
+    try {
+      await invoke('save_config_order', { key: 'codex', order: newOrder })
+      const persistedOrder = await invoke<string[]>('load_config_order', { key: 'codex' })
+      if (JSON.stringify(persistedOrder) !== JSON.stringify(newOrder)) {
+        throw new Error('排序写入后回读不一致')
+      }
+      order.value = [...newOrder]
+      return true
+    } catch (error) {
+      try {
+        await invoke('save_config_order', { key: 'codex', order: previousOrder })
+        const restoredOrder = await invoke<string[]>('load_config_order', { key: 'codex' })
+        if (JSON.stringify(restoredOrder) !== JSON.stringify(previousOrder)) {
+          throw new Error('旧排序恢复后回读不一致')
+        }
+        statusMessage.value = `保存 CodeX 配置排序失败，旧排序已恢复：${error}`
+      } catch (rollbackError) {
+        statusMessage.value = `保存 CodeX 配置排序失败且旧排序恢复未通过校验：${rollbackError}；原始错误：${error}`
+      }
+      return false
+    }
+  }
+
   async function applyProfile(): Promise<boolean> {
     const profile = profiles.value.find(item => item.id === selectedProfileId.value)
     if (!profile || isDirty.value || applying.value || apiKeyRevealing.value) return false
@@ -307,9 +334,9 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
       syncToGlobal.value = applyToGlobal
       if (applyToGlobal
         && profile.authMode === 'custom'
-        && secretStorageKind.value === 'macos_keychain'
+        && secretStorageKind.value === 'macos_plaintext'
         && profile.hasStoredApiKey) {
-        statusMessage.value = `CodeX 配置 '${profile.name}' 已同步到启动器和全局；Codex 将通过命令式认证从 Keychain 读取 Key，首次使用时可能需要授权`
+        statusMessage.value = `CodeX 配置 '${profile.name}' 已同步到启动器和全局；Codex 将通过命令式认证从启动器凭据文件读取 Key`
       } else if (applyToGlobal
         && profile.authMode === 'custom'
         && !customGlobalKeySyncSupported.value) {
@@ -358,8 +385,8 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
       revealedStoredApiKey.value = apiKey
       storedApiKeyRevealed.value = true
       clearStoredApiKey.value = false
-      const storageLabel = secretStorageKind.value === 'macos_keychain'
-        ? 'Keychain'
+      const storageLabel = secretStorageKind.value === 'macos_plaintext'
+        ? '启动器凭据文件'
         : secretStorageKind.value === 'windows_dpapi'
           ? '安全凭据存储'
           : '凭据存储'
@@ -500,6 +527,7 @@ export const useCodexConfigStore = defineStore('codexConfig', () => {
     selectProfile,
     newProfile,
     saveProfile,
+    reorderProfiles,
     applyProfile,
     revealApiKey,
     fetchModels,

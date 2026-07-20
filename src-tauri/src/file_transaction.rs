@@ -139,6 +139,18 @@ fn set_private_file_permissions(
 }
 
 pub fn restore_json_backup_if_missing(path: &Path, label: &str) -> Result<bool, String> {
+    restore_json_backup_if_missing_with_privacy(path, label, JsonFilePrivacy::Preserve)
+}
+
+pub fn restore_private_json_backup_if_missing(path: &Path, label: &str) -> Result<bool, String> {
+    restore_json_backup_if_missing_with_privacy(path, label, JsonFilePrivacy::CurrentUserOnly)
+}
+
+fn restore_json_backup_if_missing_with_privacy(
+    path: &Path,
+    label: &str,
+    privacy: JsonFilePrivacy,
+) -> Result<bool, String> {
     if path.exists() {
         return Ok(false);
     }
@@ -151,7 +163,7 @@ pub fn restore_json_backup_if_missing(path: &Path, label: &str) -> Result<bool, 
         fs::read(&backup_path).map_err(|error| format!("无法读取 {label} 备份：{error}"))?;
     serde_json::from_slice::<Value>(&content)
         .map_err(|error| format!("{label} 备份不是有效 JSON：{error}"))?;
-    write_json_atomic(path, &content, label)?;
+    write_json_atomic_with_privacy(path, &content, label, privacy)?;
     Ok(true)
 }
 

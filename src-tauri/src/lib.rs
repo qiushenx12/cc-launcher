@@ -8,8 +8,6 @@ pub mod config_store;
 pub mod dependency_manager;
 pub mod env_applier;
 pub mod file_transaction;
-#[cfg(target_os = "macos")]
-pub mod macos_keychain;
 pub mod model_fetcher;
 pub mod opencode_config;
 pub mod persistent_state;
@@ -82,6 +80,9 @@ pub fn run() {
             opencode_config::repair_opencode_permissions,
             opencode_config::load_opencode_global_config,
             opencode_config::save_opencode_global_config,
+            opencode_config::write_opencode_global_provider,
+            opencode_config::delete_opencode_global_provider,
+            opencode_config::save_opencode_global_options,
             opencode_config::fetch_opencode_global_models,
             opencode_config::save_opencode_provider_key,
             opencode_config::save_opencode_provider_connection,
