@@ -129,6 +129,8 @@ pub struct AppState {
     pub terminal: TerminalState,
     #[serde(default = "default_last_active_main_tab")]
     pub last_active_main_tab: String,
+    #[serde(default)]
+    pub pane_widths: BTreeMap<String, f64>,
     #[serde(default, flatten)]
     pub extra: Map<String, Value>,
 }
@@ -275,8 +277,8 @@ fn migrate_legacy() -> Option<AppState> {
 fn tool_state_mut<'a>(state: &'a mut AppState, key: &str) -> Result<&'a mut ToolState, String> {
     match key {
         "claude" | "claude-panel" => Ok(&mut state.claude),
-        "codex" | "codex-panel" => Ok(&mut state.codex),
-        "opencode" | "opencode-panel" => Ok(&mut state.opencode),
+        "codex" | "codex-panel" | "codex-config-panel" => Ok(&mut state.codex),
+        "opencode" | "opencode-panel" | "opencode-config-panel" => Ok(&mut state.opencode),
         _ => Err(format!("Unknown CLI state key: {key}")),
     }
 }
@@ -284,8 +286,8 @@ fn tool_state_mut<'a>(state: &'a mut AppState, key: &str) -> Result<&'a mut Tool
 fn tool_state_ref<'a>(state: &'a AppState, key: &str) -> Result<&'a ToolState, String> {
     match key {
         "claude" | "claude-panel" => Ok(&state.claude),
-        "codex" | "codex-panel" => Ok(&state.codex),
-        "opencode" | "opencode-panel" => Ok(&state.opencode),
+        "codex" | "codex-panel" | "codex-config-panel" => Ok(&state.codex),
+        "opencode" | "opencode-panel" | "opencode-config-panel" => Ok(&state.opencode),
         _ => Err(format!("Unknown CLI state key: {key}")),
     }
 }
@@ -375,12 +377,26 @@ pub fn save_launch_dir(key: String, dir: String) -> Result<(), String> {
 #[tauri::command]
 pub fn load_pane_width(key: String) -> Result<f64, String> {
     let state = load_state()?;
-    Ok(tool_state_ref(&state, &key)?.pane_width)
+    if let Ok(tool) = tool_state_ref(&state, &key) {
+        return Ok(tool.pane_width);
+    }
+    state
+        .pane_widths
+        .get(&key)
+        .copied()
+        .ok_or_else(|| format!("No saved pane width for key: {key}"))
 }
 
 #[tauri::command]
 pub fn save_pane_width(key: String, width: f64) -> Result<(), String> {
-    update_tool_state(&key, |tool| tool.pane_width = width)
+    let mut state = load_state()?;
+    match tool_state_mut(&mut state, &key) {
+        Ok(tool) => tool.pane_width = width,
+        Err(_) => {
+            state.pane_widths.insert(key, width);
+        }
+    }
+    save_state(&state)
 }
 
 // ---------------------------------------------------------------------------
@@ -551,5 +567,26 @@ mod tests {
 
         assert_eq!(output["claude"]["futureToolField"], "keep");
         assert_eq!(output["futureRootField"]["enabled"], Value::Bool(true));
+    }
+
+    #[test]
+    fn generic_pane_widths_round_trip_and_do_not_leak_into_cli_state() {
+        let input = serde_json::json!({
+            "pane_widths": { "project-left-sidebar": 260.0 }
+        });
+        let mut state: AppState = serde_json::from_value(input).expect("decode state");
+        assert_eq!(
+            state.pane_widths.get("project-left-sidebar"),
+            Some(&260.0)
+        );
+        assert!(tool_state_ref(&state, "project-left-sidebar").is_err());
+
+        state.pane_widths.insert("project-right-sidebar".to_string(), 340.0);
+        let output = serde_json::to_value(&state).expect("encode state");
+        assert_eq!(output["pane_widths"]["project-right-sidebar"], 340.0);
+        assert_eq!(
+            tool_state_ref(&state, "claude").expect("claude state").pane_width,
+            default_pane_width(),
+        );
     }
 }
