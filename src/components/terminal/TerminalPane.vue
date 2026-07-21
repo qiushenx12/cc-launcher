@@ -11,6 +11,10 @@ import {
   type TerminalOutputWriter,
 } from '@/utils/codexTerminalOutput'
 import { encodeCodexTerminalInput } from '@/utils/codexTerminalInput'
+import {
+  blocksLegacyMultilineShortcut,
+  terminalShortcutInput,
+} from '@/utils/terminalKeyboard'
 import { usePlatform } from '@/composables/usePlatform'
 
 const props = defineProps<{
@@ -96,6 +100,13 @@ function initTerminal() {
 
   term.open(containerRef.value!)
 
+  const forwardInput = (data: string) => {
+    const ptyData = cliKind === 'codex'
+      ? encodeCodexTerminalInput(data, isWindows.value)
+      : data
+    invoke('pty_write', { tabId: props.tabId, data: ptyData }).catch(() => {})
+  }
+
   // Don't call fitAddon.fit() immediately after open() — the container may not
   // have its final dimensions yet (e.g. transitioning from display:none).
   // Keep the IntersectionObserver alive so it re-fits whenever the terminal
@@ -127,6 +138,23 @@ function initTerminal() {
   const t = term
   term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
     if (e.type !== 'keydown') return true
+    const shortcutInput = terminalShortcutInput(e)
+    if (shortcutInput !== null) {
+      // The supported CLI TUIs interpret ESC + CR as multiline input.
+      // Feed the remapped sequence back through xterm so it follows the same
+      // onData path as a real Alt+Enter key event.
+      e.preventDefault()
+      e.stopPropagation()
+      t.input(shortcutInput, true)
+      return false
+    }
+    if (blocksLegacyMultilineShortcut(e)) {
+      // xterm maps Alt+Enter to ESC + CR by default. Keep multiline input on
+      // Shift+Enter only and prevent the legacy sequence from reaching the PTY.
+      e.preventDefault()
+      e.stopPropagation()
+      return false
+    }
     const clipboardModifier = isMacOS.value ? e.metaKey : e.ctrlKey
     if (clipboardModifier && e.key.toLowerCase() === 'c') {
       const sel = t.getSelection()
@@ -148,12 +176,7 @@ function initTerminal() {
   })
 
   // Forward input to PTY
-  term.onData((data) => {
-    const ptyData = cliKind === 'codex'
-      ? encodeCodexTerminalInput(data, isWindows.value)
-      : data
-    invoke('pty_write', { tabId: props.tabId, data: ptyData }).catch(() => {})
-  })
+  term.onData(forwardInput)
 
   // Forward resize to PTY
   term.onResize(({ cols, rows }) => {

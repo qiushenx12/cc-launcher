@@ -124,6 +124,7 @@ Shortcuts are defined in `src/App.vue`:
 
 | Context | Shortcut | Action |
 | --- | --- | --- |
+| Terminal | `Shift + Enter` | Insert a new line without submitting |
 | Terminal | `Ctrl + W` | Close the active terminal tab |
 | Terminal | `Ctrl + Tab` | Switch terminal tabs |
 | Project | `Ctrl + T` | Create a project session |

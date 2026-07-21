@@ -1,31 +1,45 @@
 # Agents Launcher
 
-Agents Launcher is a Windows desktop workspace for running and managing AI coding CLIs from one application. It provides dedicated integrations for **Claude Code**, **Codex**, and **OpenCode**, together with project-aware sessions, configuration profiles, an embedded terminal, and local orchestration tools.
+English | [简体中文](./README-中文版.md)
 
-The application is built with **Tauri 2**, **Vue 3**, and **Rust**. It uses the native Windows webview and a Rust PTY backend instead of bundling an Electron runtime.
+Agents Launcher is a desktop workspace for running and managing **Claude Code**, **Codex**, and **OpenCode** from one application. It combines isolated CLI configuration profiles, project and native-session discovery, embedded PTY terminals, and file tools.
 
-> **Platform:** Windows 10/11 only. The backend uses Windows-specific registry and credential APIs.
+The application is built with **Tauri 2**, **Vue 3**, **Pinia**, **TypeScript**, and **Rust**. It uses the operating system's native webview and a Rust PTY backend instead of bundling an Electron runtime.
 
-## What It Does
+## Platform status
+
+| Platform | Status | Packages |
+| --- | --- | --- |
+| Windows 10/11 | Primary development and release target | NSIS `.exe` installer |
+| macOS 13+ | Desktop capabilities and packaging have been validated; native builds and release checks run on a Mac | `.app` and `.dmg` |
+| Linux | Not currently supported | — |
+
+macOS support has been validated and merged into `main`. Future macOS development uses a platform branch that first merges the latest `main`, then implements and validates platform changes before merging back. Because of this synchronization step, macOS updates may follow mainline development with a short delay.
+
+Some integrations are platform-specific. Windows uses the registry, DPAPI, and `winget` where applicable. macOS uses platform-specific configuration files and command discovery; Windows-only installation actions are not exposed there.
+
+## Features
 
 | Area | Capabilities |
 | --- | --- |
-| CLI workspaces | Separate entry points for Claude Code, Codex, and OpenCode with runtime and capability detection |
+| CLI workspaces | Separate entry points for Claude Code, Codex, and OpenCode with isolated profiles, runtime detection, and capability checks |
 | Configuration | Create, edit, select, and apply CLI-specific profiles; discover models and manage provider settings |
-| Projects and sessions | Discover recent projects and native CLI sessions, create workspace sessions, and resume previous work |
-| Embedded terminal | Run CLI processes in multi-tab PTY terminals powered by xterm.js and `portable-pty` |
-| Workspace tools | Browse and edit files, manage side panels, resize panes, and preserve workspace state |
-| Multi-agent workflows | Exchange messages between terminal tabs, control tab permissions, save snapshots, and manage orchestration presets |
-| Safe persistence | Use atomic writes, verified backups, migrations, secret redaction, and Windows DPAPI where supported |
+| Projects and sessions | Discover recent projects and native CLI sessions, create project sessions, and resume previous work |
+| Terminal workspace | Run CLI processes in standalone and project-aware multi-tab PTY terminals powered by xterm.js and `portable-pty` |
+| Bottom terminal sidebar | Open independent terminal tabs at the user home directory or one of the five most recently updated project roots; the panel collapses when all tabs close |
+| Workspace tools | Browse and edit files, move the tool sidebar, resize panes, and preserve workspace state |
+| Header customization | Reorder top-level entries and hide optional CLI entries; the configuration entry always remains available |
+| Dependency gates | Validate Node.js and Git at startup on Windows and macOS, then check supported CLI executables before activating their workflows; automatic installation is Windows-only |
+| Safe persistence | Use atomic writes, verified backups, migrations, secret redaction, and platform-aware credential storage |
 
-## Supported CLI Integrations
+## Supported CLI integrations
 
 ### Claude Code
 
 - Environment-based configuration profiles
 - Model discovery and launch options
-- Recent project and session discovery
-- Built-in or external terminal launch
+- CLI capability checks before workspace activation
+- Shared project workspaces with native session listing and resume support
 
 ### Codex
 
@@ -38,8 +52,10 @@ The application is built with **Tauri 2**, **Vue 3**, and **Rust**. It uses the 
 
 - Managed provider and model configuration
 - JSONC-aware synchronization with existing OpenCode settings
-- Provider connection management and encrypted local credentials
+- Provider connection management and local credential handling
 - Native project and session discovery
+
+Agents Launcher does not bundle these CLIs. Install each CLI separately before testing or using its workspace.
 
 ## Architecture
 
@@ -51,28 +67,27 @@ flowchart TB
     Services --> Runtime["CLI detection and runtime adapters"]
     Services --> Config["Configuration, migration, and persistence"]
     Services --> PTY["PTY and terminal session manager"]
-    Services --> Windows["Windows registry and DPAPI"]
+    Services --> Platform["Windows and macOS integrations"]
     Runtime --> CLIs["Claude Code / Codex / OpenCode"]
     PTY -->|"output events"| Stores
     Config --> Data["Local application data"]
 ```
 
-The frontend owns presentation and transient UI state. Pinia stores coordinate project, terminal, runtime, and profile state, while all privileged filesystem, process, PTY, registry, and credential operations are handled by Rust through Tauri commands.
+The frontend owns presentation and transient UI state. Pinia stores coordinate project, terminal, runtime, profile, and layout state. Privileged filesystem, process, PTY, credential, and platform operations are handled by Rust through Tauri commands.
 
 ### Frontend
 
 The Vue application lives under `src/`:
 
 - `components/config/` provides the shared configuration workspace.
-- `components/claude/`, `components/codex/`, and `components/opencode/` contain CLI-specific configuration interfaces.
-- `components/project/` implements the project and session workspace.
+- `components/claude/`, `components/codex/`, and `components/opencode/` contain CLI-specific interfaces.
+- `components/project/` implements project sessions, file tools, and sidebars.
 - `components/terminal/` manages xterm.js tabs and PTY interaction.
-- `components/orchestration/` provides agent roles and reusable orchestration presets.
-- `stores/` contains Pinia stores for CLI runtimes, profiles, projects, terminals, and tab communication.
+- `stores/` contains Pinia state for CLI runtimes, profiles, projects, terminals, top-bar layout, and tab communication.
 
 ### Backend
 
-The Rust application lives under `src-tauri/src/`. Its main responsibilities are grouped as follows:
+The Rust application lives under `src-tauri/src/`:
 
 | Modules | Responsibility |
 | --- | --- |
@@ -81,76 +96,100 @@ The Rust application lives under `src-tauri/src/`. Its main responsibilities are
 | `cli_migration`, `file_transaction` | Backward-compatible migrations, atomic writes, backups, and recovery |
 | `project_manager`, `session_manager` | Project metadata, recent items, and session persistence |
 | `pty` | Process creation, terminal input/output, resizing, titles, and lifecycle management |
-| `tab_cli` | Inter-tab commands, permissions, terminal snapshots, and orchestration presets |
-| `persistent_state`, `settings_manager` | Window, pane, font, active profile, and launch preference persistence |
-| `registry`, `claude_launcher`, `model_fetcher` | Windows integration, CLI launch, environment application, and model API access |
+| `tab_cli` | Inter-tab commands, permissions, and terminal snapshots |
+| `persistent_state`, `settings_manager` | Window, pane, font, profile, layout, and launch-state persistence |
+| `platform_env`, `env_applier`, `registry` | Platform-aware executable discovery and environment integration |
 
-## Data and Security
+## Data and security
 
 Application-managed state is stored under:
 
-```text
-%APPDATA%\ClaudeEnvManager\
-```
+| Platform | Directory |
+| --- | --- |
+| Windows | `%APPDATA%\ClaudeEnvManager\` |
+| macOS | `~/Library/Application Support/ClaudeEnvManager/` |
 
-The application preserves unknown fields when updating supported configuration files and uses transactional writes for sensitive state changes. Codex and OpenCode managed secrets use Windows DPAPI where applicable, and diagnostics are designed to redact credential values.
+The application preserves unknown fields when updating supported external configuration files and uses transactional writes for sensitive state changes. On Windows, managed Codex and OpenCode secrets use DPAPI where supported. The current macOS implementation uses application-private files rather than Keychain protection, so local application data must be treated as sensitive.
 
-Agents Launcher also reads native metadata and configuration from the installed CLIs. It does not bundle Claude Code, Codex, or OpenCode; each CLI must be installed separately for its workspace to become available.
+Never commit CLI credentials, API keys, local application data, or generated diagnostic files.
 
 ## Development
 
 ### Prerequisites
 
-- Windows 10 or Windows 11
-- Node.js 20 or newer
+- Git
+- Node.js 22 or newer; use an active LTS release
 - npm
-- Rust stable with the `x86_64-pc-windows-msvc` target
-- Visual Studio Build Tools with the Desktop development with C++ workload
-- Microsoft Edge WebView2 Runtime
+- Rust stable and Cargo
+- Platform requirements for Tauri:
+  - Windows: Microsoft C++ Build Tools, the Desktop development with C++ workload, WebView2, and the Rust MSVC toolchain
+  - macOS: Xcode Command Line Tools and the native Rust toolchain
 
-### Install Dependencies
+Python 3.10+ is required for the versioned packaging workflow, but not for normal `npm run tauri dev` development.
 
-```powershell
+See [Development Environment Dependencies](./docs/development-environment-dependencies.md) for installation details and verification commands.
+
+### Install dependencies
+
+```text
 npm install
 ```
 
-### Run in Development
+### Run in development
 
-```powershell
+```text
 npm run tauri dev
 ```
 
 This starts the Vite frontend and the Tauri application with hot reload.
 
-### Build
+### Static checks and tests
 
-```powershell
-npm run tauri build
-```
-
-Production executables and the NSIS installer are generated under `src-tauri/target/release/`.
-
-### Static Checks and Tests
-
-```powershell
+```text
 # Frontend type check and production bundle
 npm run build
 
-# Frontend terminal-output tests (Node.js 22+)
-node --test tests/codexTerminalOutput.test.ts
+# Frontend terminal tests (Node.js 22+)
+node --test tests/codexTerminalInput.test.ts tests/codexTerminalOutput.test.ts
 
 # Rust compile check and unit tests
-Set-Location src-tauri
-cargo check
-cargo test
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml
+
+# Version-management tests
+python -m unittest discover -s tests -p test_build_version.py -v
 ```
 
-## Repository Layout
+Use `python3` instead of `python` on macOS when necessary.
+
+## Build and release
+
+For a local production build without version-state handling:
+
+```text
+npm run tauri build
+```
+
+For the versioned packaging workflow:
+
+```powershell
+# Windows
+python build.py
+```
+
+```bash
+# macOS
+./build-macos.command
+```
+
+Windows and macOS results are recorded separately in `version.json`. A version becomes publishable only after every required platform has passed its local package test. See the [Build and Release Guide](./docs/build.md) for the complete workflow, artifact locations, Git tags, and GitHub Release commands.
+
+## Repository layout
 
 ```text
 .
 |-- src/                    Vue 3 frontend
-|   |-- components/         Configuration, project, terminal, and orchestration UI
+|   |-- components/         Configuration, project, terminal, and shared UI
 |   |-- composables/        Shared Vue behaviors
 |   |-- stores/             Pinia application state
 |   |-- types/              TypeScript contracts
@@ -160,19 +199,26 @@ cargo test
 |   |-- tests/fixtures/     CLI contract and migration fixtures
 |   `-- capabilities/       Tauri permission capabilities
 |-- contracts/              Shared CLI contract fixtures
-|-- tests/                  Frontend tests
-|-- docs/                   Design, migration, and verification notes
-|-- build.py                Windows release build helper
-`-- dev.py                  Windows development launcher helper
+|-- tests/                  Frontend and version-management tests
+|-- docs/                   Stable development and release documentation
+|-- build.py                Cross-platform versioned packaging helper
+|-- build-macos.command     macOS packaging entry point
+|-- version.json            Per-platform release state
+`-- dev.py                  Development launcher helper
 ```
 
-## Keyboard Shortcuts
+## Keyboard shortcuts
 
 | Shortcut | Action |
 | --- | --- |
+| `Shift + Enter` | Insert a new line in an embedded CLI terminal |
 | `Ctrl + T` | Create a project session |
-| `Ctrl + W` | Close the active project session or terminal tab |
-| `Ctrl + Tab` | Switch between project sessions or terminal tabs |
-| `Ctrl + P` | Open a file in the project sidebar |
+| `Ctrl + Tab` | Switch project sessions in the Claude Code workspace (currently Claude Code only) |
+| `Ctrl + P` | Open a file in the Claude Code project sidebar (currently Claude Code only) |
 | `Ctrl + S` | Save the active sidebar file |
 | `Ctrl + Shift + B` | Toggle the project tool sidebar |
+
+## Documentation
+
+- [Development Environment Dependencies](./docs/development-environment-dependencies.md)
+- [Build and Release Guide](./docs/build.md)
