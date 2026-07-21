@@ -3,6 +3,7 @@
 *.toml text eol=lf
 *.rs text eol=lf
 *.sh text eol=lf
+*.command text eol=lf
 
 *.png binary
 *.ico binary

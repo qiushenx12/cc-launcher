@@ -62,6 +62,21 @@
       </section>
     </div>
 
+    <Transition name="bottom-pane">
+      <div
+        v-show="store.bottomSidebarOpen"
+        class="project-panel__bottom-shell"
+        :style="{ height: `${bottomHeight + 9}px`, flexBasis: `${bottomHeight + 9}px` }"
+      >
+        <div
+          class="project-panel__divider project-panel__divider--horizontal"
+          :class="{ 'project-panel__divider--dragging': bottomDivider.isDragging.value }"
+          @mousedown="bottomDivider.start"
+        />
+        <BottomSidebar :height="bottomHeight" />
+      </div>
+    </Transition>
+
     <div v-if="store.statusMessage" class="project-panel__toast">
       {{ store.statusMessage }}
     </div>
@@ -79,6 +94,7 @@ import ProjectSidebar from './ProjectSidebar.vue'
 import ModuleToolbar from './ModuleToolbar.vue'
 import ProjectTerminalArea from './ProjectTerminalArea.vue'
 import RightSidebar from './RightSidebar.vue'
+import BottomSidebar from './BottomSidebar.vue'
 import type { CliKind } from '@/types/cli'
 
 const store = useProjectStore()
@@ -92,10 +108,12 @@ const emit = defineEmits<{
 const LEFT_KEY = 'project-left-sidebar'
 const RIGHT_KEY = 'project-right-sidebar'
 const TOP_KEY = 'project-top-sidebar'
+const BOTTOM_KEY = 'project-bottom-sidebar'
 
 const MIN_LEFT = 160
 const MIN_RIGHT = 200
 const MIN_TOP = 160
+const MIN_BOTTOM = 160
 
 function clampLeft(value: number) {
   const max = Math.max(MIN_LEFT, window.innerWidth - 400)
@@ -110,6 +128,11 @@ function clampRight(value: number) {
 function clampTop(value: number) {
   const max = Math.max(MIN_TOP, window.innerHeight - 320)
   return Math.max(MIN_TOP, Math.min(max, value))
+}
+
+function clampBottom(value: number) {
+  const max = Math.max(MIN_BOTTOM, window.innerHeight - 320)
+  return Math.max(MIN_BOTTOM, Math.min(max, value))
 }
 
 const leftDivider = useResizableDivider(210, {
@@ -135,9 +158,19 @@ const topDivider = useResizableDivider(240, {
   },
 })
 
+const bottomDivider = useResizableDivider(240, {
+  min: MIN_BOTTOM,
+  axis: 'y',
+  invert: true,
+  onChange: (value) => {
+    bottomHeight.value = clampBottom(value)
+  },
+})
+
 const leftWidth = leftDivider.value
 const rightWidth = rightDivider.value
 const topHeight = topDivider.value
+const bottomHeight = bottomDivider.value
 
 // Right-edge drop zone: while the sidebar is closed, dropping a file on the
 // right 20% of the content area opens the sidebar with that file.
@@ -196,6 +229,14 @@ async function loadWidths() {
   } catch {
     // use default
   }
+  try {
+    const savedBottom = await invoke<number | null>('load_pane_width', { key: BOTTOM_KEY })
+    if (savedBottom !== null && savedBottom !== undefined) {
+      bottomHeight.value = clampBottom(savedBottom)
+    }
+  } catch {
+    // use default
+  }
 }
 
 async function saveWidth(key: string, value: number) {
@@ -216,6 +257,10 @@ watch(rightDivider.isDragging, async (dragging) => {
 
 watch(topDivider.isDragging, async (dragging) => {
   if (!dragging) await saveWidth(TOP_KEY, topHeight.value)
+})
+
+watch(bottomDivider.isDragging, async (dragging) => {
+  if (!dragging) await saveWidth(BOTTOM_KEY, bottomHeight.value)
 })
 
 onMounted(async () => {
@@ -270,6 +315,15 @@ watch(() => props.cliKind, (kind) => {
   overflow: hidden;
 }
 
+.project-panel__bottom-shell {
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .left-pane-enter-active,
 .left-pane-leave-active,
 .right-pane-enter-active,
@@ -287,12 +341,16 @@ watch(() => props.cliKind, (kind) => {
 }
 
 .top-pane-enter-active,
-.top-pane-leave-active {
+.top-pane-leave-active,
+.bottom-pane-enter-active,
+.bottom-pane-leave-active {
   transition: height 0.22s ease, flex-basis 0.22s ease, opacity 0.16s ease;
 }
 
 .top-pane-enter-from,
-.top-pane-leave-to {
+.top-pane-leave-to,
+.bottom-pane-enter-from,
+.bottom-pane-leave-to {
   height: 0 !important;
   flex-basis: 0 !important;
   opacity: 0;

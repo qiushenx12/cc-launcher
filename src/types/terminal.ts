@@ -5,7 +5,7 @@ export interface TerminalTab {
   active: boolean
   titleEdited: boolean
   sessionId?: string
-  scope?: 'terminal' | 'project' | 'sidebar'
+  scope?: 'terminal' | 'project' | 'sidebar' | 'bottom-sidebar'
   projectSessionId?: string
   sidebarTabId?: string
   cliKind: import('./cli').CliKind

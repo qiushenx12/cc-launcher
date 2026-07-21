@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 2,
+  "currentVersion": "1.0.0",
+  "published": false,
+  "requiredPlatforms": [
+    "windows",
+    "macos"
+  ],
+  "platforms": {
+    "windows": {
+      "status": "pending",
+      "architecture": null,
+      "testedAt": null,
+      "artifacts": []
+    },
+    "macos": {
+      "status": "pending",
+      "architecture": null,
+      "testedAt": null,
+      "artifacts": []
+    }
+  },
+  "releases": []
+}

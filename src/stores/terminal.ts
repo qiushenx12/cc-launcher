@@ -170,9 +170,9 @@ export const useTerminalStore = defineStore('terminal', () => {
       title: title ?? `终端 ${id}`,
       alive: true,
       active: false,
-      // Project/session terminals should keep the user-defined session name and
-      // not be overwritten by the shell's OSC 0 title updates.
-      titleEdited: options.scope === 'project' || options.scope === 'sidebar' ? true : false,
+      // Scoped terminals should keep the user-defined name and not be
+      // overwritten by the shell's OSC 0 title updates.
+      titleEdited: options.scope !== undefined && options.scope !== 'terminal',
       sessionId,
       scope: options.scope ?? 'terminal',
       projectSessionId: options.projectSessionId,

@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
-import { CLI_DESCRIPTORS, CLI_KINDS, isCliKind, type CliKind } from '@/types/cli'
+import { CLI_DESCRIPTORS, isCliKind, type CliKind } from '@/types/cli'
+import { useTopBarStore } from '@/stores/topBar'
 
 interface DraftGuard {
   isDirty: () => boolean
@@ -15,8 +16,10 @@ export const useConfigWorkspaceStore = defineStore('configWorkspace', () => {
   const activeKind = ref<CliKind>(isCliKind(savedKind) ? savedKind : 'claude')
   const preflightVisible = ref(false)
   const guards = new Map<CliKind, DraftGuard>()
+  const topBarStore = useTopBarStore()
 
   const activeHasUnsavedChanges = computed(() => guards.get(activeKind.value)?.isDirty() ?? false)
+  const availableKinds = computed(() => topBarStore.cliOrder)
 
   function registerDraftGuard(kind: CliKind, guard: DraftGuard) {
     guards.set(kind, guard)
@@ -55,7 +58,7 @@ export const useConfigWorkspaceStore = defineStore('configWorkspace', () => {
   return {
     activeKind,
     preflightVisible,
-    availableKinds: CLI_KINDS,
+    availableKinds,
     activeHasUnsavedChanges,
     registerDraftGuard,
     confirmDiscardActiveChanges,

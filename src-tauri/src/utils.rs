@@ -23,6 +23,13 @@ pub fn get_claude_config_dir() -> Result<String, String> {
 }
 
 #[tauri::command]
+pub fn get_home_dir() -> Result<String, String> {
+    dirs::home_dir()
+        .map(|path| path.to_string_lossy().to_string())
+        .ok_or_else(|| "Cannot determine user home directory".to_string())
+}
+
+#[tauri::command]
 pub fn open_directory(path: String) -> Result<(), String> {
     #[cfg(windows)]
     {

@@ -1,93 +1,97 @@
 #!/bin/zsh
 
-# Finder may launch this script with the user's home directory as cwd.
-# Resolve every relative path from the script location instead.
+# Finder launches .command files with an unpredictable working directory.
+# Resolve all project paths from this script's own location.
 PROJECT_DIR="${0:A:h}"
-cd "$PROJECT_DIR" || {
-  echo "无法进入项目目录：$PROJECT_DIR"
-  read -r "?按回车键关闭窗口…"
-  exit 1
-}
 
 pause_before_exit() {
   echo
-  read -r "?按回车键关闭窗口…"
+  read -r "?按回车键关闭窗口……"
 }
 
 fail() {
   echo
-  echo "构建未完成：$1"
+  echo "macOS 打包未开始：$1"
   pause_before_exit
   exit 1
 }
 
 require_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "未找到 $1。$2"
+  local command_name="$1"
+  local install_hint="$2"
+  command -v "$command_name" >/dev/null 2>&1 || fail "未找到 $command_name。$install_hint"
 }
 
+cd "$PROJECT_DIR" || fail "无法进入项目目录：$PROJECT_DIR"
+
 echo "========================================"
-echo " Agents Launcher macOS 构建"
+echo " Agents Launcher macOS 构建与版本记录"
 echo "========================================"
 echo "项目目录：$PROJECT_DIR"
 echo
 
-require_command node "请先安装 Node.js 20 或更高版本。"
+[[ -f "$PROJECT_DIR/build.py" ]] || fail "未找到 build.py。"
+
+require_command python3 "请安装 Python 3.10 或更高版本。"
+require_command node "请安装 Node.js 18 或更高版本。"
 require_command npm "请确认 Node.js 和 npm 已正确安装。"
-require_command rustc "请先从 https://rustup.rs 安装 Rust。"
-require_command cargo "请先从 https://rustup.rs 安装 Rust。"
-require_command rustup "请确认 Rust 是通过 rustup 安装的。"
+require_command rustc "请从 https://rustup.rs 安装 Rust。"
+require_command cargo "请从 https://rustup.rs 安装 Rust。"
 require_command xcode-select "请先执行 xcode-select --install。"
 
 if ! xcode-select -p >/dev/null 2>&1; then
   fail "未检测到 Xcode Command Line Tools，请先执行 xcode-select --install。"
 fi
 
+if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+  fail "当前 Python 版本为 $(python3 --version 2>/dev/null)，需要 Python 3.10 或更高版本。"
+fi
+
 NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null)"
-if [[ ! "$NODE_MAJOR" =~ '^[0-9]+$' ]] || (( NODE_MAJOR < 20 )); then
-  fail "当前 Node.js 版本为 $(node --version 2>/dev/null)，构建需要 Node.js 20 或更高版本。"
+case "$NODE_MAJOR" in
+  ''|*[!0-9]*)
+    fail "无法识别当前 Node.js 版本：$(node --version 2>/dev/null)"
+    ;;
+esac
+if (( NODE_MAJOR < 18 )); then
+  fail "当前 Node.js 版本为 $(node --version 2>/dev/null)，需要 Node.js 18 或更高版本。"
 fi
 
 case "$(uname -m)" in
   arm64)
-    BUILD_TARGET="aarch64-apple-darwin"
+    MAC_ARCHITECTURE="Apple Silicon (arm64)"
     ;;
   x86_64)
-    BUILD_TARGET="x86_64-apple-darwin"
+    MAC_ARCHITECTURE="Intel (x86_64)"
     ;;
   *)
     fail "暂不支持当前处理器架构：$(uname -m)"
     ;;
 esac
 
+echo "Python：$(python3 --version)"
 echo "Node.js：$(node --version)"
 echo "Rust：$(rustc --version)"
-echo "目标架构：$BUILD_TARGET"
+echo "架构：$MAC_ARCHITECTURE"
+echo
+echo "接下来由 build.py 统一处理："
+echo "  - 读取并同步当前版本号"
+echo "  - 生成 macOS .app 和 .dmg"
+echo "  - 记录 macOS 测试状态和产物"
+echo "  - Windows、macOS 均通过后发布当前版本"
 echo
 
-if ! rustup target list --installed | grep -Fxq "$BUILD_TARGET"; then
-  echo "正在安装 Rust 目标：$BUILD_TARGET"
-  rustup target add "$BUILD_TARGET" || fail "Rust 目标安装失败：$BUILD_TARGET"
-fi
+# build.py normally pauses on errors. The wrapper owns the final pause so a
+# Finder-launched Terminal window only asks once before closing.
+AGENTS_LAUNCHER_COMMAND_WRAPPER=1 python3 "$PROJECT_DIR/build.py"
+BUILD_EXIT_CODE=$?
 
-if [[ ! -d node_modules ]]; then
-  echo "首次构建，正在安装 npm 依赖…"
-  npm install || fail "npm 依赖安装失败。"
-  echo
-fi
-
-echo "开始生成 .app 和 .dmg…"
 echo
-
-if npm run tauri build -- --target "$BUILD_TARGET" --bundles app,dmg; then
-  BUNDLE_DIR="$PROJECT_DIR/src-tauri/target/$BUILD_TARGET/release/bundle"
-  echo
-  echo "构建成功。"
-  echo "产物目录：$BUNDLE_DIR"
-  if [[ -d "$BUNDLE_DIR" ]]; then
-    open "$BUNDLE_DIR"
-  fi
-  pause_before_exit
-  exit 0
+if (( BUILD_EXIT_CODE == 0 )); then
+  echo "macOS 打包流程已结束。请核对上方版本状态和产物路径。"
 else
-  fail "Tauri 构建失败，请查看上方日志。"
+  echo "macOS 打包脚本异常退出，退出码：$BUILD_EXIT_CODE"
 fi
+
+pause_before_exit
+exit "$BUILD_EXIT_CODE"

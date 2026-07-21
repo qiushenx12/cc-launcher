@@ -15,6 +15,7 @@ import { usePlatform } from '@/composables/usePlatform'
 export type TerminalStatus = 'off' | 'idle' | 'running'
 export type SidebarTabType = 'tools' | 'file' | 'terminal' | 'browser'
 export type SidebarPlacement = 'right' | 'top'
+export type BottomTerminalLocation = 'home' | 'project'
 export type FileViewMode = 'source' | 'preview'
 export type ProjectSortMode = 'manual' | 'time'
 
@@ -239,6 +240,10 @@ export const useProjectStore = defineStore('project', () => {
   const sidebarOpen = ref(false)
   const sidebarPlacement = ref<SidebarPlacement>('right')
   const leftSidebarCollapsed = ref(false)
+  const bottomSidebarOpen = ref(false)
+  const bottomSidebarActiveTabIds = ref<Partial<Record<CliKind, number>>>({})
+  const bottomSidebarTerminalPromises: Partial<Record<CliKind, Promise<number | null>>> = {}
+  const homeDirectory = ref('')
   const sidebarTabs = ref<SidebarTab[]>([])
   const activeSidebarTabId = ref<string | null>(null)
   const statusMessage = ref('')
@@ -278,6 +283,12 @@ export const useProjectStore = defineStore('project', () => {
     visibleProjects.value.find((p) => p.id === activeProjectId.value) ?? null
   )
 
+  const recentBottomTerminalProjects = computed(() =>
+    [...visibleProjects.value]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 5)
+  )
+
   const sessionsOfActiveProject = computed(() =>
     visibleSessions.value
       .filter((s) => s.projectId === activeProjectId.value)
@@ -290,6 +301,20 @@ export const useProjectStore = defineStore('project', () => {
 
   const activeSidebarTab = computed(() =>
     visibleSidebarTabs.value.find((tab) => tab.id === activeSidebarTabId.value) ?? null
+  )
+
+  const bottomSidebarTabs = computed(() =>
+    useTerminalStore().tabs.filter(
+      (tab) => tab.scope === 'bottom-sidebar' && tab.cliKind === activeCliKind.value,
+    )
+  )
+
+  const activeBottomSidebarTerminalId = computed(() =>
+    bottomSidebarTabs.value.some(
+      (tab) => tab.id === bottomSidebarActiveTabIds.value[activeCliKind.value],
+    )
+      ? bottomSidebarActiveTabIds.value[activeCliKind.value] ?? null
+      : bottomSidebarTabs.value[0]?.id ?? null
   )
 
   const recentItemsOfActiveProject = computed(() =>
@@ -1574,6 +1599,113 @@ export const useProjectStore = defineStore('project', () => {
     sidebarOpen.value = false
   }
 
+  async function loadHomeDirectory() {
+    if (homeDirectory.value) return homeDirectory.value
+    try {
+      homeDirectory.value = await invoke<string>('get_home_dir')
+      return homeDirectory.value
+    } catch (error) {
+      statusMessage.value = `用户主目录获取失败：${error}`
+      return null
+    }
+  }
+
+  async function createBottomSidebarTerminal(location: BottomTerminalLocation, projectId?: string) {
+    const cliKind = activeCliKind.value
+    let cwd: string | null
+    let title: string
+
+    if (location === 'project') {
+      const project = visibleProjects.value.find((item) => item.id === projectId)
+      if (!project) {
+        statusMessage.value = '所选项目已不存在'
+        return null
+      }
+      cwd = project.path
+      title = project.name
+    } else {
+      cwd = await loadHomeDirectory()
+      if (!cwd) return null
+      title = '主目录'
+    }
+
+    try {
+      const terminalId = await useTerminalStore().createTab(
+        getDefaultShell(),
+        {},
+        cwd,
+        title,
+        {
+          scope: 'bottom-sidebar',
+          activate: false,
+          cliKind,
+        },
+      )
+      bottomSidebarActiveTabIds.value[cliKind] = terminalId
+      bottomSidebarOpen.value = true
+      return terminalId
+    } catch (error) {
+      statusMessage.value = `独立终端启动失败：${error}`
+      return null
+    }
+  }
+
+  async function ensureBottomSidebarTerminal() {
+    const cliKind = activeCliKind.value
+    const existingId = activeBottomSidebarTerminalId.value
+    if (existingId) {
+      bottomSidebarActiveTabIds.value[cliKind] = existingId
+      return existingId
+    }
+
+    const pending = bottomSidebarTerminalPromises[cliKind]
+    if (pending) return pending
+
+    const creation = createBottomSidebarTerminal('home')
+    bottomSidebarTerminalPromises[cliKind] = creation
+    try {
+      return await creation
+    } finally {
+      if (bottomSidebarTerminalPromises[cliKind] === creation) {
+        delete bottomSidebarTerminalPromises[cliKind]
+      }
+    }
+  }
+
+  async function openBottomSidebar() {
+    bottomSidebarOpen.value = true
+    await ensureBottomSidebarTerminal()
+  }
+
+  function closeBottomSidebar() {
+    bottomSidebarOpen.value = false
+  }
+
+  function activateBottomSidebarTerminal(tabId: number) {
+    const tab = bottomSidebarTabs.value.find((item) => item.id === tabId)
+    if (tab) bottomSidebarActiveTabIds.value[activeCliKind.value] = tab.id
+  }
+
+  async function closeBottomSidebarTerminal(tabId: number) {
+    const cliKind = activeCliKind.value
+    const tabsBeforeClose = [...bottomSidebarTabs.value]
+    const closingIndex = tabsBeforeClose.findIndex((tab) => tab.id === tabId)
+    if (closingIndex === -1) return
+
+    await useTerminalStore().closeTab(tabId)
+    const remainingTabs = bottomSidebarTabs.value
+    if (remainingTabs.length === 0) {
+      delete bottomSidebarActiveTabIds.value[cliKind]
+      bottomSidebarOpen.value = false
+      return
+    }
+
+    if (bottomSidebarActiveTabIds.value[cliKind] === tabId) {
+      const nextIndex = Math.min(closingIndex, remainingTabs.length - 1)
+      bottomSidebarActiveTabIds.value[cliKind] = remainingTabs[nextIndex].id
+    }
+  }
+
   function makeSidebarTab(type: SidebarTabType, payload?: string): SidebarTab {
     const titles: Record<SidebarTabType, string> = {
       tools: '工具',
@@ -1801,14 +1933,20 @@ export const useProjectStore = defineStore('project', () => {
     sidebarOpen,
     sidebarPlacement,
     leftSidebarCollapsed,
+    bottomSidebarOpen,
+    bottomSidebarActiveTabIds,
+    homeDirectory,
     sidebarTabs,
     activeSidebarTabId,
     statusMessage,
     sessionTerminalIds,
     activeProject,
+    recentBottomTerminalProjects,
     sessionsOfActiveProject,
     activeSession,
     activeSidebarTab,
+    bottomSidebarTabs,
+    activeBottomSidebarTerminalId,
     recentItemsOfActiveProject,
     loadProjects,
     prepareCliWorkspace,
@@ -1837,6 +1975,13 @@ export const useProjectStore = defineStore('project', () => {
     closeSessionTerminal,
     openSidebar,
     closeSidebar,
+    openBottomSidebar,
+    closeBottomSidebar,
+    loadHomeDirectory,
+    createBottomSidebarTerminal,
+    ensureBottomSidebarTerminal,
+    activateBottomSidebarTerminal,
+    closeBottomSidebarTerminal,
     openSidebarTab,
     closeSidebarTab,
     openFile,

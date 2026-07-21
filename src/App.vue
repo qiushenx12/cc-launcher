@@ -5,8 +5,10 @@
       <div class="title-bar__left">
         <button
           class="title-bar__icon-btn"
+          :class="{ active: leftSidebarOpen }"
           :title="leftSidebarToggleTitle"
           :aria-label="leftSidebarToggleTitle"
+          :aria-pressed="leftSidebarOpen"
           :disabled="!appReady"
           data-tauri-drag-region="false"
           @click="toggleActiveLeftSidebar"
@@ -18,40 +20,15 @@
 
       <nav class="title-bar__tabs" @dblclick.stop>
         <button
+          v-for="item in topBarStore.visibleOrder"
+          :key="item"
           class="title-bar__tab"
-          :class="{ active: mainTab === 'config' }"
+          :class="{ active: mainTab === item }"
           :disabled="!appReady"
           data-tauri-drag-region="false"
-          @click="openConfigTab"
+          @click="openTopBarItem(item)"
         >
-          配置
-        </button>
-        <button
-          class="title-bar__tab"
-          :class="{ active: mainTab === 'claude' }"
-          :disabled="!appReady"
-          data-tauri-drag-region="false"
-          @click="openClaudeTab"
-        >
-          {{ CLI_DESCRIPTORS.claude.label }}
-        </button>
-        <button
-          class="title-bar__tab"
-          :class="{ active: mainTab === 'codex' }"
-          :disabled="!appReady"
-          data-tauri-drag-region="false"
-          @click="openCodexTab"
-        >
-          {{ CLI_DESCRIPTORS.codex.label }}
-        </button>
-        <button
-          class="title-bar__tab"
-          :class="{ active: mainTab === 'opencode' }"
-          :disabled="!appReady"
-          data-tauri-drag-region="false"
-          @click="openOpencodeTab"
-        >
-          {{ CLI_DESCRIPTORS.opencode.label }}
+          {{ topBarItemLabel(item) }}
         </button>
       </nav>
 
@@ -94,7 +71,7 @@
     <main v-if="appReady" class="app-content">
       <!-- Config panels -->
       <div v-show="mainTab === 'config'" class="app-panel">
-        <ConfigWorkspace :sidebar-collapsed="configSidebarCollapsed" />
+        <ConfigWorkspace />
       </div>
 
       <!-- Terminal panel — always mounted to preserve state -->
@@ -316,7 +293,19 @@
           @click="setMdFontSize(mdFontSize + 1)"
         >+</button>
       </div>
+
+      <div class="settings-dropdown__section">界面布局</div>
+      <button class="settings-dropdown__item" @click="openTopBarOrderModal">
+        <span class="settings-dropdown__check">↕</span>
+        <span class="settings-dropdown__item-label">顶栏排序</span>
+        <span class="settings-dropdown__chevron">›</span>
+      </button>
     </div>
+
+    <TopBarOrderModal
+      :visible="topBarOrderModalOpen"
+      @close="topBarOrderModalOpen = false"
+    />
   </div>
 </template>
 
@@ -331,6 +320,7 @@ import TerminalManager from './components/terminal/TerminalManager.vue'
 import ProjectPanel from './components/project/ProjectPanel.vue'
 import OrchestrationManager from './components/orchestration/OrchestrationManager.vue'
 import StatusBar from './components/common/StatusBar.vue'
+import TopBarOrderModal from './components/common/TopBarOrderModal.vue'
 import { useClaudeStore } from './stores/claude'
 import { useTerminalStore } from './stores/terminal'
 import { useMarkdownFontSize, MD_FONT_MIN, MD_FONT_MAX } from './composables/useMarkdownFontSize'
@@ -338,6 +328,7 @@ import { useSettingsPopover } from './composables/useSettingsPopover'
 import { useProjectStore } from './stores/project'
 import { useCliRuntimeStore } from './stores/cliRuntime'
 import { useConfigWorkspaceStore } from './stores/configWorkspace'
+import { topBarItemLabel, useTopBarStore, type TopBarItem } from './stores/topBar'
 import { usePlatform } from './composables/usePlatform'
 import {
   CLI_DESCRIPTORS,
@@ -371,9 +362,10 @@ const terminalStore = useTerminalStore()
 const projectStore = useProjectStore()
 const cliRuntimeStore = useCliRuntimeStore()
 const configWorkspaceStore = useConfigWorkspaceStore()
+const topBarStore = useTopBarStore()
 const { isWindows, isMacOS } = usePlatform()
 const terminalManagerRef = ref<InstanceType<typeof TerminalManager> | null>(null)
-const configSidebarCollapsed = ref(false)
+const topBarOrderModalOpen = ref(false)
 const dependencyState = ref<DependencyGateState>('checking')
 const dependencyResult = ref<DependencyCheckResult | null>(null)
 const dependencyActionMessage = ref('')
@@ -460,24 +452,26 @@ const dependencyGateMessage = computed(() => {
 })
 
 const leftSidebarToggleTitle = computed(() => {
-  if (isCliKind(mainTab.value)) return '折叠/展开项目边栏'
-  if (mainTab.value === 'config') return '折叠/展开配置边栏'
-  return '折叠/展开左侧边栏'
+  return '折叠/展开项目边栏'
 })
+
+const leftSidebarOpen = computed(() => !projectStore.leftSidebarCollapsed)
 
 function toggleActiveLeftSidebar() {
   if (!appReady.value) return
-  if (isCliKind(mainTab.value)) {
-    projectStore.toggleLeftSidebarCollapsed()
-    return
-  }
-  if (mainTab.value === 'config') {
-    configSidebarCollapsed.value = !configSidebarCollapsed.value
-  }
+  projectStore.toggleLeftSidebarCollapsed()
 }
 
 function openConfigTab() {
   mainTab.value = 'config'
+}
+
+async function openTopBarItem(item: TopBarItem) {
+  if (item === 'config') {
+    openConfigTab()
+    return
+  }
+  await openCliTab(item)
 }
 
 // ── Window controls ────────────────────────────────────────────────────────
@@ -623,6 +617,11 @@ function setProjectDropPathMode(mode: 'filename' | 'relative') {
   showSettings.value = false
 }
 
+function openTopBarOrderModal() {
+  showSettings.value = false
+  topBarOrderModalOpen.value = true
+}
+
 // ── App font size ──────────────────────────────────────────────────────────
 const APP_FONT_MIN = 10
 const APP_FONT_MAX = 18
@@ -710,14 +709,6 @@ async function openCliTab(kind: CliKind, forceCheck = false) {
 
 async function openClaudeTab() {
   await openCliTab('claude')
-}
-
-async function openCodexTab() {
-  await openCliTab('codex')
-}
-
-async function openOpencodeTab() {
-  await openCliTab('opencode')
 }
 
 async function retryCliGateCheck() {
@@ -966,6 +957,7 @@ async function initializeReadyApp() {
 onMounted(async () => {
   loadTheme()
   loadAppFontSize()
+  await topBarStore.loadOrder()
   await loadWindowState()
   await loadLastMainTab()
   isMaximized.value = await win.isMaximized().catch(() => false)
@@ -1098,6 +1090,11 @@ onBeforeUnmount(() => {
 .title-bar__icon-btn:hover {
   background-color: var(--tab-bg);
   color: var(--text-primary);
+}
+
+.title-bar__icon-btn.active {
+  color: var(--primary);
+  background: rgba(0, 122, 255, 0.08);
 }
 
 .title-bar__icon-btn:disabled,
@@ -1271,6 +1268,16 @@ onBeforeUnmount(() => {
   width: 16px;
   text-align: center;
   font-weight: 600;
+}
+
+.settings-dropdown__item-label {
+  flex: 1;
+}
+
+.settings-dropdown__chevron {
+  color: var(--text-secondary);
+  font-size: 18px;
+  line-height: 1;
 }
 
 .font-size-row {

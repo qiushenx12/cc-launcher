@@ -129,6 +129,10 @@ pub struct AppState {
     pub terminal: TerminalState,
     #[serde(default = "default_last_active_main_tab")]
     pub last_active_main_tab: String,
+    #[serde(default = "default_top_bar_order")]
+    pub top_bar_order: Vec<String>,
+    #[serde(default)]
+    pub top_bar_hidden: Vec<String>,
     #[serde(default)]
     pub pane_widths: BTreeMap<String, f64>,
     #[serde(default, flatten)]
@@ -137,6 +141,38 @@ pub struct AppState {
 
 fn default_last_active_main_tab() -> String {
     "config".to_string()
+}
+
+fn default_top_bar_order() -> Vec<String> {
+    ["config", "claude", "codex", "opencode"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+fn normalize_top_bar_order(order: &[String]) -> Vec<String> {
+    let defaults = default_top_bar_order();
+    let mut normalized = Vec::with_capacity(defaults.len());
+    for item in order.iter().chain(defaults.iter()) {
+        if defaults.contains(item) && !normalized.contains(item) {
+            normalized.push(item.clone());
+        }
+    }
+    normalized
+}
+
+fn normalize_top_bar_hidden(hidden: &[String]) -> Vec<String> {
+    default_top_bar_order()
+        .into_iter()
+        .filter(|item| item != "config" && hidden.contains(item))
+        .collect()
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TopBarLayout {
+    pub order: Vec<String>,
+    pub hidden: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -513,6 +549,29 @@ pub fn save_last_active_main_tab(tab: String) -> Result<(), String> {
     update_state(|s| s.last_active_main_tab = normalized)
 }
 
+// ---------------------------------------------------------------------------
+// Tauri commands — top bar layout
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn load_top_bar_layout() -> Result<TopBarLayout, String> {
+    let state = load_state()?;
+    Ok(TopBarLayout {
+        order: normalize_top_bar_order(&state.top_bar_order),
+        hidden: normalize_top_bar_hidden(&state.top_bar_hidden),
+    })
+}
+
+#[tauri::command]
+pub fn save_top_bar_layout(layout: TopBarLayout) -> Result<(), String> {
+    let order = normalize_top_bar_order(&layout.order);
+    let hidden = normalize_top_bar_hidden(&layout.hidden);
+    update_state(|state| {
+        state.top_bar_order = order;
+        state.top_bar_hidden = hidden;
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,5 +647,31 @@ mod tests {
             tool_state_ref(&state, "claude").expect("claude state").pane_width,
             default_pane_width(),
         );
+    }
+
+    #[test]
+    fn top_bar_order_deduplicates_filters_and_appends_missing_items() {
+        let order = vec![
+            "codex".to_string(),
+            "unknown".to_string(),
+            "config".to_string(),
+            "codex".to_string(),
+        ];
+        assert_eq!(
+            normalize_top_bar_order(&order),
+            vec!["codex", "config", "claude", "opencode"]
+        );
+    }
+
+    #[test]
+    fn top_bar_hidden_filters_config_unknown_and_duplicate_items() {
+        let hidden = vec![
+            "config".to_string(),
+            "codex".to_string(),
+            "unknown".to_string(),
+            "codex".to_string(),
+            "claude".to_string(),
+        ];
+        assert_eq!(normalize_top_bar_hidden(&hidden), vec!["claude", "codex"]);
     }
 }

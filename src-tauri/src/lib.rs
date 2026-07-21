@@ -123,6 +123,8 @@ pub fn run() {
             persistent_state::save_project_drop_path_mode,
             persistent_state::load_last_active_main_tab,
             persistent_state::save_last_active_main_tab,
+            persistent_state::load_top_bar_layout,
+            persistent_state::save_top_bar_layout,
             // project_manager commands
             project_manager::load_projects,
             project_manager::save_projects,
@@ -145,6 +147,7 @@ pub fn run() {
             dependency_manager::install_dependency_via_winget,
             // utils commands
             utils::get_claude_config_dir,
+            utils::get_home_dir,
             utils::open_directory,
             utils::open_env_vars_dialog,
             utils::get_current_env_vars,

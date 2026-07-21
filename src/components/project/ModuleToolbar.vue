@@ -6,6 +6,15 @@
     <div class="module-toolbar__actions">
       <button
         class="module-toolbar__sidebar"
+        :class="{ active: store.bottomSidebarOpen }"
+        title="展开/收起下侧边栏"
+        aria-label="展开/收起下侧边栏"
+        @click="toggleBottomSidebar"
+      >
+        <span class="sidebar-toggle-icon sidebar-toggle-icon--bottom" aria-hidden="true"></span>
+      </button>
+      <button
+        class="module-toolbar__sidebar"
         :class="{ active: store.sidebarOpen && store.sidebarPlacement === 'top' }"
         title="展开/收起上侧边栏"
         aria-label="展开/收起上侧边栏"
@@ -30,6 +39,14 @@
 import { useProjectStore } from '@/stores/project'
 
 const store = useProjectStore()
+
+function toggleBottomSidebar() {
+  if (store.bottomSidebarOpen) {
+    store.closeBottomSidebar()
+  } else {
+    store.openBottomSidebar()
+  }
+}
 
 function toggleSidebar() {
   if (store.sidebarOpen && store.sidebarPlacement === 'right') {
@@ -63,7 +80,7 @@ function toggleTopSidebar() {
 
 .module-toolbar__title {
   min-width: 0;
-  max-width: min(460px, calc(100% - 76px));
+  max-width: min(460px, calc(100% - 110px));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
