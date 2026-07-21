@@ -156,4 +156,4 @@ These paths and `node_modules/` are ignored by Git. Do not add generated build o
 - Ask the user for explicit confirmation before staging or committing any change under `docs/`.
 - Ask the user for explicit confirmation again before pushing a commit that contains changes under `docs/` to a remote repository.
 - Development-stage documents, plans, reviews, drafts, progress notes, and temporary records must remain local and must never be committed.
-- Only `docs/build.md` and `docs/依赖检测与安装开发文档.md` may remain tracked in `docs/`; changes to either file still require the confirmations above.
+- Only `docs/build.md` and `docs/development-environment-dependencies.md` may remain tracked in `docs/`; changes to either file still require the confirmations above.
